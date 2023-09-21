@@ -56,7 +56,7 @@ morre
          chama impstr
          desv morre
 
-msg_ini  string 'init inicializando...'
+msg_ini  string 'init...'
 prog1    string 'p1.maq'
 prog2    string 'p2.maq'
 prog3    string 'p3.maq'

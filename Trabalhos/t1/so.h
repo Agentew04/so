@@ -7,6 +7,7 @@
 
 typedef struct so_t so_t;
 
+
 #include "memoria.h"
 #include "cpu.h"
 #include "console.h"

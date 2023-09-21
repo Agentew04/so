@@ -282,7 +282,7 @@ static void insere_str_no_term(console_t *self, char c, char *str)
   // insere caracteres no terminal (e espaço no final)
   int t = term(c);
   if (t == -1) {
-    console_printf(self, "Terminal '%c' inválido\n", c);
+    console_printf(self, "Terminal '%c' invalido\n", c);
     return;
   }
   char *p = str;
@@ -297,7 +297,7 @@ static void limpa_saida_do_term(console_t *self, char c)
 {
   int t = term(c);
   if (t == -1) {
-    console_printf(self, "Terminal '%c' inválido\n", c);
+    console_printf(self, "Terminal '%c' invalido\n", c);
     return;
   }
   self->term[t].saida[0] = '\0';
@@ -352,7 +352,7 @@ static void interpreta_entrada(console_t *self)
       insere_comando_externo(self, cmd);
       break;
     default:
-      console_printf(self, "Comando '%c' não reconhecido", cmd);
+      console_printf(self, "Comando '%c' nao reconhecido", cmd);
   }
   self->digitando[0] = '\0';
 }

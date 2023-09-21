@@ -54,8 +54,8 @@ void controle_laco(controle_t *self)
     controle_atualiza_console(self);
   } while (self->estado != fim);
 
-  console_printf(self->console, "Fim da execução.");
-  console_printf(self->console, "relógio: %d\n", rel_agora(self->relogio));
+  console_printf(self->console, "Fim da execucao.");
+  console_printf(self->console, "relogio: %d\n", rel_agora(self->relogio));
 }
  
 
