@@ -106,7 +106,7 @@ static void init_curses(void)
   initscr();
   cbreak();      // lê cada char, não espera enter
   noecho();      // não mostra o que é digitado
-  timeout(5);    // não espera digitar, retorna ERR se nada foi digitado
+  timeout(1);    // não espera digitar, retorna ERR se nada foi digitado
   start_color();
   init_pair(COR_TXT_PAR, COLOR_GREEN, COLOR_BLACK);
   init_pair(COR_CURSOR_PAR, COLOR_BLACK, COLOR_GREEN);
@@ -228,12 +228,15 @@ static void insere_char_no_term(console_t *self, int t, char ch)
 
 static void insere_string_na_console(console_t *self, char *s)
 {
-  for(int l=0; l<N_LIN_CONSOLE-1; l++) {
-    strncpy(self->txt_console[l], self->txt_console[l+1], N_COL);
-    self->txt_console[l][N_COL] = '\0'; // quem definiu strncpy é estúpido!
+  if(!self->txt_console){
+    return;
   }
-  strncpy(self->txt_console[N_LIN_CONSOLE-1], s, N_COL);
-  self->txt_console[N_LIN_CONSOLE-1][N_COL] = '\0'; // grrrr
+  for(int l=0; l<N_LIN_CONSOLE-1; l++) {
+    //strncpy(self->txt_console[l], self->txt_console[l+1], N_COL-1);
+    //self->txt_console[l][N_COL] = '\0'; // quem definiu strncpy é estúpido!
+  }
+  //strncpy(self->txt_console[N_LIN_CONSOLE-1], s, N_COL);
+  //self->txt_console[N_LIN_CONSOLE-1][N_COL] = '\0'; // grrrr
 }
 
 static void insere_strings_na_console(console_t *self, char *s)

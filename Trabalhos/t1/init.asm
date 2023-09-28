@@ -33,11 +33,11 @@ limpa    define 10
          chamas
          armm pid3
          ; espera os processos terminarem
-         cargm pid1
+         cargm pid2
          trax
          cargi SO_ESPERA_PROC
          chamas
-         cargm pid2
+         cargm pid1
          trax
          cargi SO_ESPERA_PROC
          chamas
@@ -56,7 +56,7 @@ morre
          chama impstr
          desv morre
 
-msg_ini  string 'init...'
+msg_ini  string 'init initing...'
 prog1    string 'p1.maq'
 prog2    string 'p2.maq'
 prog3    string 'p3.maq'
