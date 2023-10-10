@@ -4,6 +4,7 @@
 // os tipos de erro que podem acontecer ao tentar executar uma instrução
 typedef enum {
   ERR_OK,            // sem erro
+  ERR_CPU_PAUSADA,   // CPU está com execução pausada, tem processos mas ta esperando eles desbloquearem
   ERR_CPU_PARADA,    // CPU está com execução suspensa
   ERR_INSTR_INV,     // tentativa de executar instrução inválida
   ERR_END_INV,       // endereço inválido

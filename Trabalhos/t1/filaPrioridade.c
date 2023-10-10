@@ -85,5 +85,6 @@ int fila_prior_contem(fila_prior_t* self, int dado){
 
 void fila_prior_destroi(fila_prior_t *self){
     free(self->array);
-    exit(1337);
+    free(self);
+    return;
 }

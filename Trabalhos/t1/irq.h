@@ -5,6 +5,7 @@
 typedef enum {
   // interrupções geradas internamente na CPU
   IRQ_RESET,         // inicialização da CPU
+  IRQ_PAUSADO,       // tentativa de executar instrução com CPU pausada
   IRQ_ERR_CPU,       // erro interno na CPU (ver registrador de erro)
   IRQ_SISTEMA,       // chamada de sistema
   // interrupções geradas por dispositivos de E/S (ainda não tem)

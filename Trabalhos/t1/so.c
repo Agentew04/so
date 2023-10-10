@@ -11,6 +11,10 @@
 #define INTERVALO_INTERRUPCAO 50   // em instruções executadas
 #define QUANTUM 5
 
+// escalonador
+#define ESC_ROUND_ROBIN
+//#define ESC_PRIORIDADE
+
 typedef enum process_estado_s {
   pronto,
   bloqueado,
@@ -20,7 +24,6 @@ typedef enum process_estado_s {
 typedef struct process_s {
   int id;
   int existe;
-  int comecoMem;
   process_estado_t estado;
   int dispES;
   int dadoES;
@@ -52,10 +55,11 @@ static err_t so_trata_interrupcao(void *argC, int reg_A);
 // funções auxiliares
 static int so_carrega_programa(so_t *self, char *nome_do_executavel);
 static bool copia_str_da_mem(int tam, char str[tam], mem_t *mem, int ender);
-static void so_escalonador(so_t* console);
+static bool so_escalonador(so_t* console);
 static void so_restaura_estado_processo(so_t *self);
 static void so_salva_estado_processo(so_t *self);
-
+static void panic(so_t* self, const char* msg);
+static void remover_processo_fila(so_t *self, int id);
 
 
 so_t *so_cria(cpu_t *cpu, mem_t *mem, console_t *console, relogio_t *relogio)
@@ -142,12 +146,34 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
     case IRQ_RELOGIO:
       err = so_trata_irq_relogio(self);
       break;
+    case IRQ_PAUSADO:
+      err = ERR_OK;
+      console_printf(self->console, "SO: ta pausado, tentando despausar");
+      break;
     default:
       err = so_trata_irq_desconhecida(self, irq);
   }
 
   so_verifica_pendencias(self);
-  so_escalonador(self);
+  bool temProc = so_escalonador(self);
+
+  if(!temProc){
+    // ver se tem algum processo bloqueado
+    bool temBloq = false;
+    for(int i=0; i<MAX_PROCESSOS;i++){
+      if(self->processos[i].estado == bloqueado){
+        temBloq = true;
+        break;
+      }
+    }
+
+    if(!temBloq){
+      console_printf(self->console, "SO: acabaram todos os processos");
+      return ERR_CPU_PARADA;
+    }
+
+  }
+
   so_restaura_estado_processo(self);
   return err;
 }
@@ -161,8 +187,6 @@ static err_t so_trata_irq_reset(so_t *self)
     return ERR_CPU_PARADA;
   }
 
-  // altera o PC para o endereço de carga (deve ter sido 100)
-  mem_escreve(self->mem, IRQ_END_PC, ender);
   // passa o processador para modo usuário
   mem_escreve(self->mem, IRQ_END_modo, usuario);
 
@@ -191,7 +215,7 @@ static err_t so_trata_irq_err_cpu(so_t *self)
   mem_le(self->mem, IRQ_END_erro, &err_int);
   err_t err = err_int;
   console_printf(self->console,
-      "SO: processo atual causou erro %d (%s)", err, err_nome(err));
+      "SO: processo atual causou erro %d (%s), matando", err, err_nome(err));
 
   so_chamada_mata_proc(self);
   return ERR_OK;
@@ -203,7 +227,11 @@ static err_t so_trata_irq_relogio(so_t *self)
   // rearma o interruptor do relógio e reinicializa o timer para a próxima interrupção
   rel_escr(self->relogio, 3, 0); // desliga o sinalizador de interrupção
   rel_escr(self->relogio, 2, INTERVALO_INTERRUPCAO);
-  self->processoAtual->quantum--;
+  if(self->processoAtual != NULL){
+    if(self->processoAtual->existe){
+      self->processoAtual->quantum--;
+    }
+  }
   return ERR_OK;
 }
 
@@ -220,8 +248,8 @@ static err_t so_trata_irq_desconhecida(so_t *self, int irq)
 
 static err_t so_trata_chamada_sistema(so_t *self)
 {
-  int id_chamada;
-  mem_le(self->mem, IRQ_END_A, &id_chamada);
+  int id_chamada = self->processoAtual->regA;
+  //mem_le(self->mem, IRQ_END_A, &id_chamada);
   if(id_chamada  != 2)
     console_printf(self->console, "SO: chamada de sistema %d", id_chamada);
   switch (id_chamada) {
@@ -252,21 +280,54 @@ static err_t so_trata_chamada_sistema(so_t *self)
 
 static void so_chamada_le(so_t *self)
 {
-  self->processoAtual->estado = bloqueado;
   int terminal = self->processoAtual->id * 4;
   int operacao = terminal + 0;
-  self->processoAtual->dispES = operacao;
+
+  int pode;
+  term_le(self->console, operacao+1, &pode);
+
+  if(pode){
+    // pode ler direto
+    term_le(self->console, operacao, &self->processoAtual->regA);
+  }else{
+    // n pode ler direto
+    self->processoAtual->estado = bloqueado;
+    self->processoAtual->dispES = operacao;
+    // remover o processo da lista de prontos
+    if(fila_contem(self->filaProcessos, self->processoAtual->id)){
+      remover_processo_fila(self, self->processoAtual->id);
+      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
+    }
+  }
 }
 
 static void so_chamada_escr(so_t *self)
 {
-  self->processoAtual->estado = bloqueado;
+  if(self->processoAtual == NULL){
+    console_printf(self->console, "SO: tentei escrever mas n tem processo atual");
+    return;
+  }
+
   int terminal = self->processoAtual->id * 4;
   int operacao = terminal + 2;
-  self->processoAtual->dispES = operacao;
-  int dado;
-  mem_le(self->mem, IRQ_END_X, &dado);
-  self->processoAtual->dadoES = dado;
+
+  int pode;
+  term_le(self->console, operacao+1, &pode);
+
+  if(pode){
+    // pode direto
+    term_escr(self->console, operacao, self->processoAtual->regX);
+  }else{
+    // n pode direto
+    self->processoAtual->estado = bloqueado;
+    self->processoAtual->dispES = operacao;
+    self->processoAtual->dadoES = self->processoAtual->regX;
+    // remover o processo da lista de prontos
+    if(fila_contem(self->filaProcessos, self->processoAtual->id)){
+      remover_processo_fila(self, self->processoAtual->id);
+      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
+    }
+  }
 }
 
 
@@ -286,7 +347,8 @@ static void so_chamada_cria_proc(so_t *self)
   // se não achou, retorna erro
   if(id == -1){
     console_printf(self->console, "SO: SO_CRIA_PROC sem espaco na tabela de processos");
-    mem_escreve(self->mem, IRQ_END_A, -1);
+    self->processoAtual->regA = -1;
+    //mem_escreve(self->mem, IRQ_END_A, -1);
     return;
   }
 
@@ -300,10 +362,10 @@ static void so_chamada_cria_proc(so_t *self)
   self->processos[id].estado = pronto;
 
   // em X está o endereço onde está o nome do arquivo
-  int ender_proc;
-  if (!mem_le(self->mem, IRQ_END_X, &ender_proc) == ERR_OK) {
-    return;
-  }
+  int ender_proc = self->processoAtual->regX;
+  // if (!mem_le(self->mem, IRQ_END_X, &ender_proc) == ERR_OK) {
+  //   return;
+  // }
   char nome[100];
   if (!copia_str_da_mem(100, nome, self->mem, ender_proc)) {
     return;
@@ -321,27 +383,41 @@ static void so_espera_proc(so_t* self){
   self->processoAtual->estado = bloqueado;
   self->processoAtual->esperando = &self->processos[self->processoAtual->regX];
   console_printf(self->console, "SO: bloqueei processo %d pq ta esperando o %d", self->processoAtual->id, self->processoAtual->regX);
+
+  remover_processo_fila(self, self->processoAtual->id);
+  console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos; filaTam: %d", self->processoAtual->id, fila_tamanho(self->filaProcessos));
 }
 
 static void so_chamada_mata_proc(so_t *self)
 {
   if(self->processoAtual == NULL){
     console_printf(self->console, "SO: SO_MATA_PROC sem processo atual");
-    mem_escreve(self->mem, IRQ_END_A, -1);
+    panic(self, "Tentei matar sem alvo");
+    //mem_escreve(self->mem, IRQ_END_A, -1);
     return;
   }
 
   // self->processoAtual->existe = 0;
   self->processoAtual->estado = parado;
   if(fila_contem(self->filaProcessos, self->processoAtual->id)){
-    int id;
-    do{
-      id = fila_dequeue(self->filaProcessos);
-      if(id != self->processoAtual->id){
-        fila_enqueue(self->filaProcessos, id);
-      }
-    }while(id != self->processoAtual->id);
+    remover_processo_fila(self, self->processoAtual->id);
   }
+
+  // se estiver alguem esperando, notificar quem esta parado
+  for(int i=0; i<MAX_PROCESSOS;i++){
+    process_t* proc = &self->processos[i];
+    if(proc->esperando == NULL){
+      continue;
+    }
+
+    if(proc->esperando == self->processoAtual){
+      proc->estado = pronto;
+      proc->esperando = NULL;
+      fila_enqueue(self->filaProcessos, proc->id);
+      console_printf(self->console, "SO: desbloqueei processo %d pq o %d morreu", proc->id, self->processoAtual->id);
+    }
+  }
+
   console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->id);
   self->processoAtual = NULL;
 }
@@ -371,44 +447,61 @@ static void so_restaura_estado_processo(so_t *self){
   //console_printf(self->console, "SO: restaurei p %d", self->processoAtual->id);
 }
 
+#ifdef ESC_ROUND_ROBIN
 // decide qual processo vai executar
-static void so_escalonador(so_t* self){
+static bool so_escalonador(so_t* self){
   // escalonador round robin
 
   // ta vazio e nao tem mais nenhum, pula
   if(fila_tamanho(self->filaProcessos) <= 0 && self->processoAtual == NULL){
     console_printf(self->console, "SO: acabaram todos os processos");
-    return;
+    return false;
   }
 
+  console_printf(self->console, "SO: escalonando, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
   // aqui ta vazio e tem disponivel
   if(self->processoAtual == NULL){
     // pega o proximo pra executar
-    int proxId;
-    do {
-      proxId = fila_dequeue(self->filaProcessos);
-    }while(self->processos[proxId].estado != pronto);
+    int proxId = fila_dequeue(self->filaProcessos);
+    if(proxId == -1 || self->processos[proxId].estado != pronto){
+      // nao tem nenhum pronto, mas existem bloqueados(eu acho)
+      panic(self, "Erro! Achei processo n pronto na fila!");
+      self->processoAtual = NULL;
+      return false;
+    }
     self->processoAtual = &self->processos[proxId];
     self->processoAtual->quantum = QUANTUM;
     console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId);
-    return;
+    return true;
   }
 
   // processo bloqueou ou acabou quantum
   if(self->processoAtual->estado == bloqueado || self->processoAtual->quantum <= 0){
     self->processoAtual->quantum = QUANTUM;
-    fila_enqueue(self->filaProcessos, self->processoAtual->id);
+    if(self->processoAtual->estado == pronto){
+      fila_enqueue(self->filaProcessos, self->processoAtual->id);
+    }
 
-    int proxId;
-    do {
-      proxId = fila_dequeue(self->filaProcessos);
-    }while(self->processos[proxId].estado != pronto);
+    int proxId = fila_dequeue(self->filaProcessos);
+    if(proxId == -1 || self->processos[proxId].estado != pronto){
+      printf("\r\nproc: %d estado: %d\r\n", proxId, self->processos[proxId].estado);
+      panic(self, "ERRO! Achei processo n pronto no fim de quantum do escalonador\n");
+      // nao tem nenhum pronto mas existem processos bloqueados
+      self->processoAtual = NULL;
+      return false;
+    }
     self->processoAtual = &self->processos[proxId];
     self->processoAtual->quantum = QUANTUM;
     //console_printf(self->console, "SO: escalonei, ainda tem x procs na fila"/*, fila_tamanho(self->filaProcessos)*/);
-    return;
+    return true;
   }
+  return true;
 }
+#elif ESC_PRIORIDADE
+static bool so_escalonador(so_t* self){
+  // escalonador por prioridade
+}
+#endif
 
 // carrega o programa na memória
 // retorna o endereço de carga ou -1
@@ -482,9 +575,9 @@ static void so_desbloqueia_es(so_t* self, int i){
   }
   self->processos[i].estado = pronto;
   self->processos[i].dispES = -1;
-  if(!fila_contem(self->filaProcessos, i)){
-    fila_enqueue(self->filaProcessos, i);
-  }
+  fila_enqueue(self->filaProcessos, i);
+
+  console_printf(self->console, "SO: desbloqueei a ES para proc %d", i);
 }
 
 static void so_desbloqueia_espera(so_t* self, int i){
@@ -494,11 +587,7 @@ static void so_desbloqueia_espera(so_t* self, int i){
       self->processos[i].id, self->processos[i].esperando->id);
     self->processos[i].esperando = NULL;
     self->processos[i].estado = pronto;
-    console_printf(self->console, "SO: processo %d estava esperando o %d e foi desbloqueado",
-      self->processos[i].id, 0);
-    if(!fila_contem(self->filaProcessos, i)){
-      fila_enqueue(self->filaProcessos, i);
-    }
+    fila_enqueue(self->filaProcessos, i);
   }
 }
 
@@ -517,5 +606,42 @@ static void so_verifica_pendencias(so_t *self) {
       // esperando outro processo
       so_desbloqueia_espera(self, i);
     }
+  }
+}
+
+static void panic(so_t* self, const char* msg){
+  puts("\r");
+  puts(msg);
+  puts("\n");
+  int filaTamanho = fila_tamanho(self->filaProcessos);
+  printf("\rFila tamanho: %d\r\nFila Items:\n", filaTamanho);
+  for(int i=0; i<filaTamanho; i++){
+    int elem = fila_dequeue(self->filaProcessos);
+    printf("\r\tPos: %d; Proc: %d; Estado: %d;\n", i, elem, self->processos[elem].estado);
+    fila_enqueue(self->filaProcessos, elem);
+  }
+
+  puts("\rProcessos:\n");
+  for(int i = 0; i<MAX_PROCESSOS; i++){
+    printf("\r\tProc: %d; Estado: %d;\n", i, self->processos[i].estado);
+  }
+  exit(1212);
+}
+
+static void remover_processo_fila(so_t *self, int id){
+  for(int i=0; i<fila_tamanho(self->filaProcessos); i++){
+    int elem = fila_dequeue(self->filaProcessos);
+    if(elem != id){
+      fila_enqueue(self->filaProcessos, elem);
+    }
+  }
+
+  // testar se foi removido mesmo o processo
+  for(int i=0; i<fila_tamanho(self->filaProcessos); i++){
+    int elem = fila_dequeue(self->filaProcessos);
+    if(elem == id){
+      panic(self, "ERRO! Nao removi o processo da fila");
+    }
+    fila_enqueue(self->filaProcessos, elem);
   }
 }

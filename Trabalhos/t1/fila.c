@@ -45,6 +45,14 @@ int fila_dequeue(fila_t *self) {
     if (fila_vazia(self)) {
         return -1;
     }
+    if(self->tamanho == 1){
+        int dado = self->inicio->dado;
+        self->tamanho = 0;
+        free(self->inicio);
+        self->inicio = NULL;
+        self->fim = NULL;
+        return dado;
+    }
     struct no *aux = self->inicio;
     int dado = aux->dado;
     self->inicio = aux->prox;

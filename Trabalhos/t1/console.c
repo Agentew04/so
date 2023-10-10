@@ -137,7 +137,12 @@ void console_destroi(console_t *self)
 
 static bool pode_imprimir_no_term(console_t *self, int t)
 {
-  return self->term[t].estado_saida == normal;
+  if(self->term[t].estado_saida>5){
+    return false;
+  }
+  term_t terminal = self->term[t];
+  int estado = terminal.estado_saida;
+  return estado == normal;
 }
 
 static void imprime_no_term(console_t *self, int t, char ch)
@@ -185,7 +190,7 @@ static void rola_saidas(console_t *self)
   for (int t = 0; t < N_TERM; t++) {
     term_t *termp = &self->term[t];
     switch (termp->estado_saida) {
-      case normal: 
+      case normal:
         break;
       case rolando:
         rola_saida(termp);
@@ -228,15 +233,12 @@ static void insere_char_no_term(console_t *self, int t, char ch)
 
 static void insere_string_na_console(console_t *self, char *s)
 {
-  if(!self->txt_console){
-    return;
-  }
   for(int l=0; l<N_LIN_CONSOLE-1; l++) {
-    //strncpy(self->txt_console[l], self->txt_console[l+1], N_COL-1);
-    //self->txt_console[l][N_COL] = '\0'; // quem definiu strncpy é estúpido!
+    strncpy(self->txt_console[l], self->txt_console[l+1], N_COL-1);
+    self->txt_console[l][N_COL] = '\0'; // quem definiu strncpy é estúpido!
   }
-  //strncpy(self->txt_console[N_LIN_CONSOLE-1], s, N_COL);
-  //self->txt_console[N_LIN_CONSOLE-1][N_COL] = '\0'; // grrrr
+  strncpy(self->txt_console[N_LIN_CONSOLE-1], s, N_COL);
+  self->txt_console[N_LIN_CONSOLE-1][N_COL] = '\0'; // grrrr
 }
 
 static void insere_strings_na_console(console_t *self, char *s)
