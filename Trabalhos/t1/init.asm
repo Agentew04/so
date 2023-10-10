@@ -33,11 +33,11 @@ limpa    define 10
          chamas
          armm pid3
          ; espera os processos terminarem
-         cargm pid3
+         cargm pid2
          trax
          cargi SO_ESPERA_PROC
          chamas
-         cargm pid2
+         cargm pid3
          trax
          cargi SO_ESPERA_PROC
          chamas
