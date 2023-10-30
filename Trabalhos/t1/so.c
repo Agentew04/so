@@ -33,7 +33,22 @@ typedef struct process_s {
   int regPC;
   int regA;
   int regX;
+  err_t regErr;
 } process_t;
+
+process_t processo_vazio = {
+  .id = -1,
+  .existe = 1,
+  .estado = pronto,
+  .dispES = -1,
+  .dadoES = 0,
+  .esperando = NULL,
+  .quantum = QUANTUM,
+  .regPC = 0,
+  .regA = 0,
+  .regX = 0,
+  .regErr = ERR_CPU_PARADA
+};
 
 
 #define MAX_PROCESSOS 4
@@ -111,7 +126,7 @@ static err_t so_trata_irq_err_cpu(so_t *self);
 static err_t so_trata_irq_relogio(so_t *self);
 static err_t so_trata_irq_desconhecida(so_t *self, int irq);
 static err_t so_trata_chamada_sistema(so_t *self);
-static void so_espera_proc(so_t* self);
+static void so_chamada_espera_proc(so_t* self);
 static void so_chamada_le(so_t *self);
 static void so_chamada_escr(so_t *self);
 static void so_chamada_cria_proc(so_t *self);
@@ -131,14 +146,12 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
   irq_t irq = reg_A;
   err_t err;
   so_salva_estado_processo(self);
-  console_printf(self->console, "SO: recebi IRQ %d (%s)", irq, irq_nome(irq));
   switch (irq) {
     case IRQ_RESET:
       err = so_trata_irq_reset(self);
       break;
     case IRQ_ERR_CPU:
       err = so_trata_irq_err_cpu(self);
-      console_printf(self->console, "SO: erro na CPU, %s", err_nome(err));
       break;
     case IRQ_SISTEMA:
       err = so_trata_chamada_sistema(self);
@@ -146,33 +159,12 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
     case IRQ_RELOGIO:
       err = so_trata_irq_relogio(self);
       break;
-    case IRQ_PAUSADO:
-      err = ERR_OK;
-      console_printf(self->console, "SO: ta pausado, tentando despausar");
-      break;
     default:
       err = so_trata_irq_desconhecida(self, irq);
   }
 
   so_verifica_pendencias(self);
-  bool temProc = so_escalonador(self);
-
-  if(!temProc){
-    // ver se tem algum processo bloqueado
-    bool temBloq = false;
-    for(int i=0; i<MAX_PROCESSOS;i++){
-      if(self->processos[i].estado == bloqueado){
-        temBloq = true;
-        break;
-      }
-    }
-
-    if(!temBloq){
-      console_printf(self->console, "SO: acabaram todos os processos");
-      return ERR_CPU_PARADA;
-    }
-
-  }
+  so_escalonador(self);
 
   so_restaura_estado_processo(self);
   return err;
@@ -199,6 +191,9 @@ static err_t so_trata_irq_reset(so_t *self)
   self->processos[0].regA = 0;
   self->processos[0].regX = 0;
   self->processos[0].quantum = QUANTUM;
+  self->processos[0].regErr = ERR_OK;
+  self->processos[0].esperando = NULL;
+  self->processos[0].dispES = -1;
 
   // coloca o processo inicial na fila de processos
   fila_enqueue(self->filaProcessos, 0);
@@ -211,13 +206,13 @@ static err_t so_trata_irq_err_cpu(so_t *self)
   // O erro está codificado em IRQ_END_erro
   // Em geral, causa a morte do processo que causou o erro
   // Ainda não temos processos, causa a parada da CPU
-  int err_int;
-  mem_le(self->mem, IRQ_END_erro, &err_int);
-  err_t err = err_int;
-  console_printf(self->console,
-      "SO: processo atual causou erro %d (%s), matando", err, err_nome(err));
+  err_t err = self->processoAtual->regErr;
+  if(err != ERR_OK && self->processoAtual != NULL && self->processoAtual != &processo_vazio){
+    console_printf(self->console,
+        "SO: processo atual causou erro %d (%s), matando", err, err_nome(err));
+    so_chamada_mata_proc(self);
+  }
 
-  so_chamada_mata_proc(self);
   return ERR_OK;
 }
 
@@ -242,14 +237,9 @@ static err_t so_trata_irq_desconhecida(so_t *self, int irq)
   return ERR_CPU_PARADA;
 }
 
-// Chamadas de sistema
-
-
-
 static err_t so_trata_chamada_sistema(so_t *self)
 {
   int id_chamada = self->processoAtual->regA;
-  //mem_le(self->mem, IRQ_END_A, &id_chamada);
   if(id_chamada  != 2)
     console_printf(self->console, "SO: chamada de sistema %d", id_chamada);
   switch (id_chamada) {
@@ -267,13 +257,14 @@ static err_t so_trata_chamada_sistema(so_t *self)
       so_chamada_mata_proc(self);
       break;
     case SO_ESPERA_PROC:
-      so_espera_proc(self);
+      console_printf(self->console, "SO: estado proc %d ant block: %d", self->processoAtual->id, self->processoAtual->estado);
+      so_chamada_espera_proc(self);
+      console_printf(self->console, "SO: estado proc %d dps block: %d", self->processoAtual->id, self->processoAtual->estado);
       break;
     default:
       console_printf(self->console,
           "SO: chamada de sistema desconhecida (%d)", id_chamada);
       return ERR_CPU_PARADA;
-      //return ERR_OK;
   }
   return ERR_OK;
 }
@@ -330,7 +321,13 @@ static void so_chamada_escr(so_t *self)
   }
 }
 
-
+/**
+ * @brief Chamada de sistema que cria um processo novo.
+ * Vai criar uma entrada automaticamente na tabela de processos
+ * e vai adicionar ele na fila de processos prontos.
+ *
+ * @param self A estrutura do SO.
+ */
 static void so_chamada_cria_proc(so_t *self)
 {
   console_printf(self->console, "criando processo...");
@@ -357,6 +354,7 @@ static void so_chamada_cria_proc(so_t *self)
   self->processos[id].existe = 1;
   self->processos[id].regA = 0;
   self->processos[id].regX = 0;
+  self->processos[id].regErr = ERR_OK;
   self->processos[id].esperando = NULL;
   self->processos[id].dispES = -1;
   self->processos[id].estado = pronto;
@@ -379,15 +377,33 @@ static void so_chamada_cria_proc(so_t *self)
   fila_enqueue(self->filaProcessos, id);
 }
 
-static void so_espera_proc(so_t* self){
-  self->processoAtual->estado = bloqueado;
-  self->processoAtual->esperando = &self->processos[self->processoAtual->regX];
-  console_printf(self->console, "SO: bloqueei processo %d pq ta esperando o %d", self->processoAtual->id, self->processoAtual->regX);
+/**
+ * @brief Chamada de sistema que bloqueia o processo atual
+ * ate o fim da execucao de outro processo.
+ *
+ * @param self A estrutura do SO.
+ */
+static void so_chamada_espera_proc(so_t* self){
+  int id = self->processoAtual->regX;
+  process_t *esperado = &self->processos[id];
+  process_t *esperador = self->processoAtual;
 
-  remover_processo_fila(self, self->processoAtual->id);
+  if(esperador->estado == bloqueado){
+    console_printf(self->console, "SO: %d ja esta bloqueado", esperador->id);
+  }
+
+  esperador->estado = bloqueado;
+  esperador->esperando = esperado;
+  console_printf(self->console, "SO: %d bloqueado(espera o %d)", esperador->id, esperado->id, esperador->estado);
+  remover_processo_fila(self, esperador->id);
   console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos; filaTam: %d", self->processoAtual->id, fila_tamanho(self->filaProcessos));
 }
 
+/**
+ * @brief Implementacao da chamada de sistema para matar o processo atual.
+ *
+ * @param self A estrutura do SO.
+ */
 static void so_chamada_mata_proc(so_t *self)
 {
   if(self->processoAtual == NULL){
@@ -403,25 +419,24 @@ static void so_chamada_mata_proc(so_t *self)
     remover_processo_fila(self, self->processoAtual->id);
   }
 
-  // se estiver alguem esperando, notificar quem esta parado
-  for(int i=0; i<MAX_PROCESSOS;i++){
-    process_t* proc = &self->processos[i];
-    if(proc->esperando == NULL){
-      continue;
-    }
+  // // se estiver alguem esperando, notificar quem esta parado
+  // for(int i=0; i<MAX_PROCESSOS;i++){
+  //   process_t* proc = &self->processos[i];
+  //   if(proc->esperando == NULL){
+  //     continue;
+  //   }
 
-    if(proc->esperando == self->processoAtual){
-      proc->estado = pronto;
-      proc->esperando = NULL;
-      fila_enqueue(self->filaProcessos, proc->id);
-      console_printf(self->console, "SO: desbloqueei processo %d pq o %d morreu", proc->id, self->processoAtual->id);
-    }
-  }
+  //   if(proc->esperando == self->processoAtual){
+  //     proc->estado = pronto;
+  //     proc->esperando = NULL;
+  //     fila_enqueue(self->filaProcessos, proc->id);
+  //     console_printf(self->console, "SO: desbloqueei processo %d pq o %d morreu", proc->id, self->processoAtual->id);
+  //   }
+  // }
 
   console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->id);
   self->processoAtual = NULL;
 }
-
 
 // pega os registradores salvos no IRQ e salva no tabela de processos para o atual
 static void so_salva_estado_processo(so_t *self){
@@ -433,40 +448,47 @@ static void so_salva_estado_processo(so_t *self){
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
   mem_le(self->mem, IRQ_END_X, &self->processoAtual->regX);
+  mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
 }
 
+// faz o inverso da so_salva_estado_processo
 static void so_restaura_estado_processo(so_t *self){
   if(self->processoAtual == NULL){
-    console_printf(self->console, "SO: tentei restaurar estado mas não tem processo atual");
-    return;
+    console_printf(self->console, "SO: restaura: procAtual NULL -> vazio");
+    self->processoAtual = &processo_vazio;
   }
 
   mem_escreve(self->mem, IRQ_END_PC, self->processoAtual->regPC);
   mem_escreve(self->mem, IRQ_END_A, self->processoAtual->regA);
   mem_escreve(self->mem, IRQ_END_X, self->processoAtual->regX);
-  //console_printf(self->console, "SO: restaurei p %d", self->processoAtual->id);
+  mem_escreve(self->mem, IRQ_END_erro, (int)self->processoAtual->regErr);
 }
 
 #ifdef ESC_ROUND_ROBIN
-// decide qual processo vai executar
+/**
+ * @brief Implementa um escalonador com a estrategia
+ * round-robin
+ *
+ * @param self A estrutura do SO.
+ * @return *true* se conseguiu achar um processo para executar e
+ * *false* se nao conseguiu achar um processo para executar
+ */
 static bool so_escalonador(so_t* self){
-  // escalonador round robin
-
   // ta vazio e nao tem mais nenhum, pula
-  if(fila_tamanho(self->filaProcessos) <= 0 && self->processoAtual == NULL){
+  if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
     console_printf(self->console, "SO: acabaram todos os processos");
+    self->processoAtual = &processo_vazio;
     return false;
   }
 
-  console_printf(self->console, "SO: escalonando, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
+  //console_printf(self->console, "SO: escalonando, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
   // aqui ta vazio e tem disponivel
-  if(self->processoAtual == NULL){
+  if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
     // pega o proximo pra executar
     int proxId = fila_dequeue(self->filaProcessos);
     if(proxId == -1 || self->processos[proxId].estado != pronto){
-      // nao tem nenhum pronto, mas existem bloqueados(eu acho)
-      panic(self, "Erro! Achei processo n pronto na fila!");
-      self->processoAtual = NULL;
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio2");
+      self->processoAtual = &processo_vazio;
       return false;
     }
     self->processoAtual = &self->processos[proxId];
@@ -484,10 +506,8 @@ static bool so_escalonador(so_t* self){
 
     int proxId = fila_dequeue(self->filaProcessos);
     if(proxId == -1 || self->processos[proxId].estado != pronto){
-      printf("\r\nproc: %d estado: %d\r\n", proxId, self->processos[proxId].estado);
-      panic(self, "ERRO! Achei processo n pronto no fim de quantum do escalonador\n");
-      // nao tem nenhum pronto mas existem processos bloqueados
-      self->processoAtual = NULL;
+      self->processoAtual = &processo_vazio;
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio1");
       return false;
     }
     self->processoAtual = &self->processos[proxId];
@@ -581,34 +601,57 @@ static void so_desbloqueia_es(so_t* self, int i){
 }
 
 static void so_desbloqueia_espera(so_t* self, int i){
-  if(self->processos[i].esperando->estado == parado ||
-    !self->processos[i].esperando->existe) {
-    console_printf(self->console, "SO: processo %d estava esperando o %d e foi desbloqueado",
-      self->processos[i].id, self->processos[i].esperando->id);
-    self->processos[i].esperando = NULL;
-    self->processos[i].estado = pronto;
-    fila_enqueue(self->filaProcessos, i);
+  process_t *proc = self->processos + i;
+  if(proc->esperando->estado == parado) {
+    console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->id, proc->esperando->id);
+    proc->esperando = NULL;
+    proc->estado = pronto;
+    if(!fila_contem(self->filaProcessos, proc->id)){
+      fila_enqueue(self->filaProcessos, proc->id);
+    }
   }
 }
 
+
+/**
+ * @brief Verifica pendencias a serem resolvidas.
+ * Ex.: Desbloqueia processos esperando dispositivos de E/S e
+ * processos esperando outros processos.
+ *
+ * @param self A estrutura do SO.
+ */
 static void so_verifica_pendencias(so_t *self) {
   // para cada processo
   for (int i = 0; i < MAX_PROCESSOS; i++)
   {
-    if(self->processos[i].estado != bloqueado){
+    process_t proc = self->processos[i];
+    if(proc.estado != bloqueado){
       continue;
     }
 
-    if(self->processos[i].dispES != -1){
+    if(i != 3){
+      // console_printf(self->console, "SO: %d esta bloqueado, dispES: %d, espr: %p", i, proc.dispES, proc.esperando);
+    }
+
+    if(proc.dispES != -1){
       // eh E/S
       so_desbloqueia_es(self, i);
-    }else if(self->processos[i].esperando != NULL){
+    }
+
+    if(proc.esperando != NULL){
       // esperando outro processo
       so_desbloqueia_espera(self, i);
     }
   }
 }
 
+/**
+ * @brief Deve ser chamado quando ocorre um erro fatal no SO. Mostra algumas informacoes
+ * de debug sobre os processos.
+ *
+ * @param self A estrutura do SO
+ * @param msg Uma mensagem de erro a ser mostrada
+ */
 static void panic(so_t* self, const char* msg){
   puts("\r");
   puts(msg);
