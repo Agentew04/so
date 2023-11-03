@@ -34,7 +34,7 @@ trata_irq.maq: trata_irq.asm montador
 
 # apaga os arquivos gerados
 clean:
-	rm -f ${OBJS} ${OBJS_MONT} ${TARGETS} ${MAQS} ${OBJS:.o=.d}
+	rm -f ${OBJS} ${OBJS_MONT} ${TARGETS} ${MAQS} ${OBJS:.o=.d} *.log
 
 # para calcular as dependências de cada arquivo .c (e colocar no .d)
 %.d: %.c

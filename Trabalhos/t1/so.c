@@ -1,7 +1,6 @@
 #include "so.h"
 #include "irq.h"
 #include "programa.h"
-#include "fila.h"
 
 #include <stdlib.h>
 #include <stdbool.h>
@@ -12,14 +11,32 @@
 #define QUANTUM 5
 
 // escalonador
-#define ESC_ROUND_ROBIN
-//#define ESC_PRIORIDADE
+// comentar essa linha abaixo do define para mudar entre
+// round robin e o de prioridade
+
+//#define ESC_ROUND_ROBIN
+#ifndef ESC_ROUND_ROBIN
+#define ESC_PRIORIDADE
+#endif
+
+#ifdef ESC_ROUND_ROBIN
+#include "fila.h"
+#elif defined(ESC_PRIORIDADE)
+#include "filaPrioridade.h"
+#endif
 
 typedef enum process_estado_s {
   pronto,
   bloqueado,
-  parado
+  parado,
+  n_estado_processo
 } process_estado_t;
+
+char* estado_processo_nome[] = {
+  "pronto",
+  "bloqueado",
+  "parado"
+};
 
 typedef struct process_s {
   int id;
@@ -34,6 +51,8 @@ typedef struct process_s {
   int regA;
   int regX;
   err_t regErr;
+
+  float prioridade;
 } process_t;
 
 process_t processo_vazio = {
@@ -47,11 +66,24 @@ process_t processo_vazio = {
   .regPC = 0,
   .regA = 0,
   .regX = 0,
-  .regErr = ERR_CPU_PARADA
+  .regErr = ERR_CPU_PARADA,
+  .prioridade = 1.0
 };
 
-
 #define MAX_PROCESSOS 4
+
+typedef struct {
+  int procsCriados;
+  int tempoTotalExecucaoCpu;
+  int tempoOcioso; // todos processos bloqueados
+  int numInterrupcoes[N_IRQ];
+  int numPreempcoesCpu;
+  int tempoTotalExecucaoProc[MAX_PROCESSOS];
+  int numPreempcoesProc[MAX_PROCESSOS];
+  int numTransicaoEstadoProc[MAX_PROCESSOS][n_estado_processo];
+  int tempoTotalEstadoProc[MAX_PROCESSOS][n_estado_processo];
+  int tempoMedioProntoProc[MAX_PROCESSOS];
+} so_stat_t;
 
 struct so_t {
   cpu_t *cpu;
@@ -61,6 +93,8 @@ struct so_t {
   process_t processos[MAX_PROCESSOS];
   process_t* processoAtual;
   fila_t* filaProcessos;
+  bool estatisticasGeradas;
+  so_stat_t* estatisticas;
 };
 
 
@@ -73,9 +107,11 @@ static bool copia_str_da_mem(int tam, char str[tam], mem_t *mem, int ender);
 static bool so_escalonador(so_t* console);
 static void so_restaura_estado_processo(so_t *self);
 static void so_salva_estado_processo(so_t *self);
-static void panic(so_t* self, const char* msg);
-static void remover_processo_fila(so_t *self, int id);
-
+static void remover_processo_fila(so_t *self, process_t* id);
+static void so_gera_estatisticas(so_t *self);
+#ifdef ESC_PRIORIDADE
+static float prioridade_processo(void* proc);
+#endif
 
 so_t *so_cria(cpu_t *cpu, mem_t *mem, console_t *console, relogio_t *relogio)
 {
@@ -86,6 +122,8 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, console_t *console, relogio_t *relogio)
   self->mem = mem;
   self->console = console;
   self->relogio = relogio;
+  self->estatisticas = (so_stat_t*)malloc(sizeof(so_stat_t));
+  self->estatisticasGeradas = false;
 
   // inicia os processos como nao existentes
   for(int i = 0; i < MAX_PROCESSOS; i++){
@@ -105,7 +143,11 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, console_t *console, relogio_t *relogio)
   rel_escr(self->relogio, 2, INTERVALO_INTERRUPCAO);
 
   // cria a fila de prioridade para o escalonador
+  #ifdef ESC_ROUND_ROBIN
   self->filaProcessos = fila_cria();
+  #elif defined(ESC_PRIORIDADE)
+  self->filaProcessos = fila_cria(prioridade_processo);
+  #endif
 
   return self;
 }
@@ -194,17 +236,13 @@ static err_t so_trata_irq_reset(so_t *self)
   self->processos[0].regErr = ERR_OK;
   self->processos[0].esperando = NULL;
   self->processos[0].dispES = -1;
+  self->processos[0].prioridade = 0.5;
 
-  // coloca o processo inicial na fila de processos
-  fila_enqueue(self->filaProcessos, 0);
+  fila_enqueue(self->filaProcessos, (void*)&self->processos[0]);
   return ERR_OK;
 }
 
-static err_t so_trata_irq_err_cpu(so_t *self)
-{
-  // Ocorreu um erro interno na CPU
-  // O erro está codificado em IRQ_END_erro
-  // Em geral, causa a morte do processo que causou o erro
+static err_t so_trata_irq_err_cpu(so_t* self){
   // Ainda não temos processos, causa a parada da CPU
   err_t err = self->processoAtual->regErr;
   if(err != ERR_OK && self->processoAtual != NULL && self->processoAtual != &processo_vazio){
@@ -285,8 +323,8 @@ static void so_chamada_le(so_t *self)
     self->processoAtual->estado = bloqueado;
     self->processoAtual->dispES = operacao;
     // remover o processo da lista de prontos
-    if(fila_contem(self->filaProcessos, self->processoAtual->id)){
-      remover_processo_fila(self, self->processoAtual->id);
+    if(fila_contem(self->filaProcessos, (void*)&self->processoAtual)){
+      remover_processo_fila(self, (void*)&self->processoAtual);
       console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
     }
   }
@@ -314,8 +352,8 @@ static void so_chamada_escr(so_t *self)
     self->processoAtual->dispES = operacao;
     self->processoAtual->dadoES = self->processoAtual->regX;
     // remover o processo da lista de prontos
-    if(fila_contem(self->filaProcessos, self->processoAtual->id)){
-      remover_processo_fila(self, self->processoAtual->id);
+    if(fila_contem(self->filaProcessos, (void*)&self->processoAtual)){
+      remover_processo_fila(self, (void*)&self->processoAtual);
       console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
     }
   }
@@ -358,6 +396,7 @@ static void so_chamada_cria_proc(so_t *self)
   self->processos[id].esperando = NULL;
   self->processos[id].dispES = -1;
   self->processos[id].estado = pronto;
+  self->processos[id].prioridade = 0.5;
 
   // em X está o endereço onde está o nome do arquivo
   int ender_proc = self->processoAtual->regX;
@@ -374,7 +413,7 @@ static void so_chamada_cria_proc(so_t *self)
   }
   self->processos[id].regPC = ender_carga;
   self->processoAtual->regA = id;
-  fila_enqueue(self->filaProcessos, id);
+  fila_enqueue(self->filaProcessos, (void*)&self->processos[id]);
 }
 
 /**
@@ -388,14 +427,10 @@ static void so_chamada_espera_proc(so_t* self){
   process_t *esperado = &self->processos[id];
   process_t *esperador = self->processoAtual;
 
-  if(esperador->estado == bloqueado){
-    console_printf(self->console, "SO: %d ja esta bloqueado", esperador->id);
-  }
-
   esperador->estado = bloqueado;
   esperador->esperando = esperado;
   console_printf(self->console, "SO: %d bloqueado(espera o %d)", esperador->id, esperado->id, esperador->estado);
-  remover_processo_fila(self, esperador->id);
+  remover_processo_fila(self, (void*)esperador);
   console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos; filaTam: %d", self->processoAtual->id, fila_tamanho(self->filaProcessos));
 }
 
@@ -408,31 +443,15 @@ static void so_chamada_mata_proc(so_t *self)
 {
   if(self->processoAtual == NULL){
     console_printf(self->console, "SO: SO_MATA_PROC sem processo atual");
-    panic(self, "Tentei matar sem alvo");
     //mem_escreve(self->mem, IRQ_END_A, -1);
     return;
   }
 
   // self->processoAtual->existe = 0;
   self->processoAtual->estado = parado;
-  if(fila_contem(self->filaProcessos, self->processoAtual->id)){
-    remover_processo_fila(self, self->processoAtual->id);
+  if(fila_contem(self->filaProcessos, (void*)&self->processoAtual)){
+    remover_processo_fila(self, (void*)&self->processoAtual);
   }
-
-  // // se estiver alguem esperando, notificar quem esta parado
-  // for(int i=0; i<MAX_PROCESSOS;i++){
-  //   process_t* proc = &self->processos[i];
-  //   if(proc->esperando == NULL){
-  //     continue;
-  //   }
-
-  //   if(proc->esperando == self->processoAtual){
-  //     proc->estado = pronto;
-  //     proc->esperando = NULL;
-  //     fila_enqueue(self->filaProcessos, proc->id);
-  //     console_printf(self->console, "SO: desbloqueei processo %d pq o %d morreu", proc->id, self->processoAtual->id);
-  //   }
-  // }
 
   console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->id);
   self->processoAtual = NULL;
@@ -464,10 +483,9 @@ static void so_restaura_estado_processo(so_t *self){
   mem_escreve(self->mem, IRQ_END_erro, (int)self->processoAtual->regErr);
 }
 
-#ifdef ESC_ROUND_ROBIN
 /**
- * @brief Implementa um escalonador com a estrategia
- * round-robin
+ * @brief Implementa um escalonador de processos para o sistema operacionar.
+ * A estrategia usada depende da definida no topo do arquivo com #defines
  *
  * @param self A estrutura do SO.
  * @return *true* se conseguiu achar um processo para executar e
@@ -476,8 +494,18 @@ static void so_restaura_estado_processo(so_t *self){
 static bool so_escalonador(so_t* self){
   // ta vazio e nao tem mais nenhum, pula
   if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
-    console_printf(self->console, "SO: acabaram todos os processos");
     self->processoAtual = &processo_vazio;
+
+    // verificar se realmente n tem mais nenhum pronto, dps mostrar estatisticas
+    bool fim = true;
+    for(int i=0;i<MAX_PROCESSOS;i++){
+      if(self->processos[i].existe && self->processos[i].estado != parado){
+        fim = false;
+      }
+    }
+    if(fim){
+      so_gera_estatisticas(self);
+    }
     return false;
   }
 
@@ -485,43 +513,47 @@ static bool so_escalonador(so_t* self){
   // aqui ta vazio e tem disponivel
   if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
     // pega o proximo pra executar
-    int proxId = fila_dequeue(self->filaProcessos);
-    if(proxId == -1 || self->processos[proxId].estado != pronto){
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
       console_printf(self->console, "SO: n tinha pronto, defini o vazio2");
       self->processoAtual = &processo_vazio;
       return false;
     }
-    self->processoAtual = &self->processos[proxId];
+    self->processoAtual = proxId;
     self->processoAtual->quantum = QUANTUM;
-    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId);
+    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId->id);
     return true;
   }
 
   // processo bloqueou ou acabou quantum
   if(self->processoAtual->estado == bloqueado || self->processoAtual->quantum <= 0){
+#ifdef ESC_PRIORIDADE
+    float prioridade = self->processoAtual->prioridade;
+    float novaPrioridade = (prioridade + ((QUANTUM - self->processoAtual->quantum)/QUANTUM))/2;
+    console_printf(self->console, "SO: proc %d, prOld %f, prNew %f, qnt %d", self->processoAtual->id,
+    self->processoAtual->prioridade, novaPrioridade,
+    self->processoAtual->quantum);
+    self->processoAtual->prioridade = novaPrioridade;
+#endif
+
     self->processoAtual->quantum = QUANTUM;
     if(self->processoAtual->estado == pronto){
-      fila_enqueue(self->filaProcessos, self->processoAtual->id);
+      fila_enqueue(self->filaProcessos, self->processoAtual);
     }
 
-    int proxId = fila_dequeue(self->filaProcessos);
-    if(proxId == -1 || self->processos[proxId].estado != pronto){
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
       self->processoAtual = &processo_vazio;
       console_printf(self->console, "SO: n tinha pronto, defini o vazio1");
       return false;
     }
-    self->processoAtual = &self->processos[proxId];
+    self->processoAtual = proxId;
     self->processoAtual->quantum = QUANTUM;
     //console_printf(self->console, "SO: escalonei, ainda tem x procs na fila"/*, fila_tamanho(self->filaProcessos)*/);
     return true;
   }
   return true;
 }
-#elif ESC_PRIORIDADE
-static bool so_escalonador(so_t* self){
-  // escalonador por prioridade
-}
-#endif
 
 // carrega o programa na memória
 // retorna o endereço de carga ou -1
@@ -577,6 +609,7 @@ static bool copia_str_da_mem(int tam, char str[tam], mem_t *mem, int ender)
 static void so_desbloqueia_es(so_t* self, int i){
   int dispositivoChecagem = self->processos[i].dispES+1;
   int jahpode;
+  process_t* proc = self->processos + i;
   term_le(self->console, dispositivoChecagem, &jahpode);
   if(!jahpode){
     return;
@@ -585,19 +618,17 @@ static void so_desbloqueia_es(so_t* self, int i){
   int leitura = (dispositivoChecagem-1) % 4 == 0;
   if(leitura){
     int dado;
-    term_le(self->console, self->processos[i].dispES, &dado);
-    self->processos[i].regA = dado;
+    term_le(self->console, proc->dispES, &dado);
+    proc->regA = dado;
   }else{
     // escrita na tela
     term_escr(self->console,
-    self->processos[i].dispES,
-    self->processos[i].dadoES);
+    proc->dispES,
+    proc->dadoES);
   }
-  self->processos[i].estado = pronto;
-  self->processos[i].dispES = -1;
-  fila_enqueue(self->filaProcessos, i);
-
-  console_printf(self->console, "SO: desbloqueei a ES para proc %d", i);
+  proc->estado = pronto;
+  proc->dispES = -1;
+  fila_enqueue(self->filaProcessos, proc);
 }
 
 static void so_desbloqueia_espera(so_t* self, int i){
@@ -606,8 +637,8 @@ static void so_desbloqueia_espera(so_t* self, int i){
     console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->id, proc->esperando->id);
     proc->esperando = NULL;
     proc->estado = pronto;
-    if(!fila_contem(self->filaProcessos, proc->id)){
-      fila_enqueue(self->filaProcessos, proc->id);
+    if(!fila_contem(self->filaProcessos, (void*)proc)){
+      fila_enqueue(self->filaProcessos, proc);
     }
   }
 }
@@ -624,21 +655,17 @@ static void so_verifica_pendencias(so_t *self) {
   // para cada processo
   for (int i = 0; i < MAX_PROCESSOS; i++)
   {
-    process_t proc = self->processos[i];
-    if(proc.estado != bloqueado){
+    process_t* proc = self->processos + i;
+    if(proc->estado != bloqueado){
       continue;
     }
 
-    if(i != 3){
-      // console_printf(self->console, "SO: %d esta bloqueado, dispES: %d, espr: %p", i, proc.dispES, proc.esperando);
-    }
-
-    if(proc.dispES != -1){
+    if(proc->dispES != -1){
       // eh E/S
       so_desbloqueia_es(self, i);
     }
 
-    if(proc.esperando != NULL){
+    if(proc->esperando != NULL){
       // esperando outro processo
       so_desbloqueia_espera(self, i);
     }
@@ -646,45 +673,75 @@ static void so_verifica_pendencias(so_t *self) {
 }
 
 /**
- * @brief Deve ser chamado quando ocorre um erro fatal no SO. Mostra algumas informacoes
- * de debug sobre os processos.
+ * @brief Remove um processo da fila de processos.
+ * Usado caso o processo foi bloqueado e deve
+ * ser removido para n aparecer no escalonador.
  *
  * @param self A estrutura do SO
- * @param msg Uma mensagem de erro a ser mostrada
+ * @param proc O processo a ser removido
  */
-static void panic(so_t* self, const char* msg){
-  puts("\r");
-  puts(msg);
-  puts("\n");
-  int filaTamanho = fila_tamanho(self->filaProcessos);
-  printf("\rFila tamanho: %d\r\nFila Items:\n", filaTamanho);
-  for(int i=0; i<filaTamanho; i++){
-    int elem = fila_dequeue(self->filaProcessos);
-    printf("\r\tPos: %d; Proc: %d; Estado: %d;\n", i, elem, self->processos[elem].estado);
-    fila_enqueue(self->filaProcessos, elem);
-  }
-
-  puts("\rProcessos:\n");
-  for(int i = 0; i<MAX_PROCESSOS; i++){
-    printf("\r\tProc: %d; Estado: %d;\n", i, self->processos[i].estado);
-  }
-  exit(1212);
-}
-
-static void remover_processo_fila(so_t *self, int id){
+static void remover_processo_fila(so_t *self, process_t* proc){
   for(int i=0; i<fila_tamanho(self->filaProcessos); i++){
-    int elem = fila_dequeue(self->filaProcessos);
-    if(elem != id){
+    process_t* elem = (process_t*)fila_dequeue(self->filaProcessos);
+    if(elem != proc){
       fila_enqueue(self->filaProcessos, elem);
     }
   }
+}
 
-  // testar se foi removido mesmo o processo
-  for(int i=0; i<fila_tamanho(self->filaProcessos); i++){
-    int elem = fila_dequeue(self->filaProcessos);
-    if(elem == id){
-      panic(self, "ERRO! Nao removi o processo da fila");
-    }
-    fila_enqueue(self->filaProcessos, elem);
+#ifdef ESC_PRIORIDADE
+/**
+ * @brief Função auxiliar para o escalonador de prioridade.
+ *
+ * @param proc O processo a ser avaliado.
+ * @return float A prioridade do processo
+ */
+static float prioridade_processo(void* proc){
+  return ((process_t*)proc)->prioridade;
+}
+#endif
+
+/**
+ * @brief Mostra as estatisticas do sistema operacional.
+ *
+ * @param self A estrutura do SO.
+ */
+static void so_gera_estatisticas(so_t *self){
+  if(self->estatisticasGeradas){
+    return;
   }
+  const char filename = "stats.log";
+  self->estatisticasGeradas = true;
+  FILE* arq = fopen(filename, "w");
+  fprintf(arq, "-=-  FIM DE EXECUÇÃO DO CPU  -=-\n");
+  fprintf(arq, "-=-       ESTATISTICAS       -=-\n");
+  fprintf(arq, "Processos criados:       %d\n", self->estatisticas->procsCriados);
+  fprintf(arq, "Tempo total de execução: %d\n", self->estatisticas->tempoTotalExecucaoCpu);
+  fprintf(arq, "Tempo ocioso: %d\n", self->estatisticas->tempoOcioso);
+  for(int i=0; i<N_IRQ ;i++){
+    fprintf(arq, "Nro de interrupcoes %s: %d\n", irq_nome(i), self->estatisticas->numInterrupcoes[i]);
+  }
+  fprintf(arq, "Preempcoes: %d\n", self->estatisticas->numPreempcoesCpu);
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    fprintf(arq, "Tempo de execução(Processo %d): %d\n", i, self->estatisticas->tempoTotalExecucaoProc[i]);
+  }
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    fprintf(arq, "Preempcoes(Processo %d): %d\n", i, self->estatisticas->numPreempcoesProc[i]);
+  }
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    for(int j=0; j<n_estado_processo; j++){
+      fprintf(arq, "Transicao de estado(Processo %d, Estado %s): %d\n", i, estado_processo_nome[j], self->estatisticas->numTransicaoEstadoProc[i][j]);
+    }
+  }
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    for(int j=0; j<n_estado_processo; j++){
+      fprintf(arq, "Tempo de estado(Processo %d, Estado %s): %d\n", i, estado_processo_nome[j], self->estatisticas->tempoTotalEstadoProc[i][j]);
+    }
+  }
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    fprintf(arq, "Tempo medio pronto(Processo %d): %d\n", i, self->estatisticas->tempoMedioProntoProc[i]);
+  }
+  fprintf(arq, "-=-     FIM ESTATISTICAS     -=-\n");
+  fclose(arq);
+  console_printf(self->console, "SO: estatisticas geradas e salvas no arquivo %s", filename);
 }

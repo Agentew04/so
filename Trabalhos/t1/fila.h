@@ -3,6 +3,13 @@
 
 typedef struct fila_s fila_t;
 
+/*
+
+ESTE ARQUIVO CONTEM DEFINICOES COM OS MESMOS NOMES DE
+FUNCOES DO ARQUIVO FILAPRIORIDADE.H
+
+*/
+
 /**
  * @brief Cria uma fila vazia
  *
@@ -16,7 +23,7 @@ fila_t *fila_cria(void);
  * @param self Um ponteiro para a fila
  * @param dado O dado a ser inserido
  */
-void fila_enqueue(fila_t *self, int dado);
+void fila_enqueue(fila_t *self, void* dado);
 
 /**
  * @brief Remove um elemento do início da fila
@@ -24,7 +31,7 @@ void fila_enqueue(fila_t *self, int dado);
  * @param self Um ponteiro para a fila
  * @return int Retorna o elemento removido
  */
-int fila_dequeue(fila_t *self);
+void* fila_dequeue(fila_t *self);
 
 /**
  * @brief Checa se a fila está vazia
@@ -44,12 +51,12 @@ int fila_tamanho(fila_t *self);
 
 /**
  * @brief Verifica se o elemento existe na fila
- * 
+ *
  * @param self A fila
  * @param dado O elemento a ser procurado
  * @return int 1 se o elemento existe, 0 senão.
  */
-int fila_contem(fila_t* self, int dado);
+int fila_contem(fila_t* self, void* dado);
 
 /**
  * @brief Libera a memória alocada pela estrutura da fila e

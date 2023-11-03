@@ -1,61 +1,44 @@
 #include "filaPrioridade.h"
 #include <stdlib.h>
 
-typedef struct {
-    int dado;
-    float prioridade;
-} item;
 
-struct fila_prior_t
+struct fila_t
 {
     int tamanho;
     int capacidade;
-    item *array;
+    void **array;
+    float (*funcPrioridade)(void*);
 };
 
-fila_prior_t* fila_prior_cria(void){
-    fila_prior_t* self = (fila_prior_t*)malloc(sizeof(fila_prior_t));
+static void ordenaArray(fila_t* self);
+
+fila_t* fila_cria(float (*funcPrioridade)(void*)){
+    fila_t* self = (fila_t*)malloc(sizeof(fila_t));
+    self->funcPrioridade = funcPrioridade;
     self->tamanho = 0;
     self->capacidade = 10;
-    self->array = (item*)malloc(sizeof(item) * self->capacidade);
+    self->array = (void**)malloc(sizeof(void*) * self->capacidade);
     return self;
 }
 
-int compara(const void* a, const void* b){
-    item* itemA = (item*)a;
-    item* itemB = (item*)b;
-
-    if(itemA->prioridade > itemB->prioridade){
-        return 1;
-    } else if(itemA->prioridade < itemB->prioridade){
-        return -1;
-    } else {
-        return 0;
-    }
-}
-
-void fila_prior_enqueue(fila_prior_t *self, int dado, float prioridade){
+void fila_enqueue(fila_t *self, void* dado){
     if(self->tamanho == self->capacidade){
         self->capacidade *= 2;
-        self->array = (item*)realloc(self->array, sizeof(item) * self->capacidade);
+        self->array = (void**)realloc(self->array, sizeof(void*) * self->capacidade);
     }
 
-    item* novoNo = (item*)malloc(sizeof(item));
-    novoNo->dado = dado;
-    novoNo->prioridade = prioridade;
-
-    self->array[self->tamanho] = *novoNo;
+    self->array[self->tamanho] = dado;
     self->tamanho++;
 
-    qsort((void*)self->array, self->tamanho, sizeof(item), compara);
+    ordenaArray(self);
 }
 
-int fila_prior_dequeue(fila_prior_t *self){
+void* fila_dequeue(fila_t *self){
     if(fila_prior_vazia(self)){
-        return -1;
+        return NULL;
     }
 
-    int dado = self->array[0].dado;
+    void* dado = self->array[0];
     for(int i = 0; i < self->tamanho; i++){
         self->array[i] = self->array[i+1];
     }
@@ -65,17 +48,17 @@ int fila_prior_dequeue(fila_prior_t *self){
     return dado;
 }
 
-int fila_prior_vazia(fila_prior_t *self){
+int fila_vazia(fila_t *self){
     return self->tamanho == 0;
 }
 
-int fila_prior_tamanho(fila_prior_t *self){
+int fila_tamanho(fila_t *self){
     return self->tamanho;
 }
 
-int fila_prior_contem(fila_prior_t* self, int dado){
+int fila_contem(fila_t* self, void* dado){
     for(int i = 0; i < self->tamanho; i++){
-        if(self->array[i].dado == dado){
+        if(self->array[i] == dado){
             return 1;
         }
     }
@@ -83,8 +66,23 @@ int fila_prior_contem(fila_prior_t* self, int dado){
     return 0;
 }
 
-void fila_prior_destroi(fila_prior_t *self){
+void fila_destroi(fila_t *self){
     free(self->array);
     free(self);
     return;
+}
+
+static void ordenaArray(fila_t* self){
+    // ordena o array da fila de acordo com a prioridade.
+    // quanto menor a prioridade, mais pro inicio deve estar
+
+    for(int i = 0; i < self->tamanho; i++){
+        for(int j = i+1; j < self->tamanho; j++){
+            if(self->funcPrioridade(self->array[i]) > self->funcPrioridade(self->array[j])){
+                void* aux = self->array[i];
+                self->array[i] = self->array[j];
+                self->array[j] = aux;
+            }
+        }
+    }
 }

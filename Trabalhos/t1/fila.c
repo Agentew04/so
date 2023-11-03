@@ -1,15 +1,10 @@
 #include "fila.h"
 #include <stdlib.h>
 
-struct no {
-    int dado;
-    struct no *prox;
-};
-
 struct fila_s
 {
-    struct no *inicio;
-    struct no *fim;
+    void** array;
+    int capacidade;
     int tamanho;
 };
 
@@ -17,55 +12,40 @@ fila_t *fila_cria(void)
 {
     fila_t *self = malloc(sizeof(fila_t));
     self->tamanho = 0;
-    self->inicio = NULL;
-    self->fim = NULL;
+    self->capacidade = 10;
+    self->array = (void**)malloc(sizeof(void*)*self->capacidade);
     return self;
 }
 
 int fila_vazia(fila_t *self)
 {
-    return self->inicio == NULL;
+    return self->tamanho == 0;
 }
 
-void fila_enqueue(fila_t *self, int dado) {
-    struct no *novo = malloc(sizeof(struct no));
-    novo->dado = dado;
-    novo->prox = NULL;
+void fila_enqueue(fila_t *self, void* dado) {
+    if(self->tamanho >= self->capacidade){
+        self->capacidade*=2;
+        self->array = (void**)realloc(self->array, sizeof(void*)*self->capacidade);
+    }
+    self->array[self->tamanho] = dado;
     self->tamanho++;
-    if (fila_vazia(self)) {
-        self->inicio = novo;
-        self->fim = novo;
-    } else {
-        self->fim->prox = novo;
-        self->fim = novo;
-    }
 }
 
-int fila_dequeue(fila_t *self) {
+void* fila_dequeue(fila_t *self) {
     if (fila_vazia(self)) {
-        return -1;
+        return NULL;
     }
-    if(self->tamanho == 1){
-        int dado = self->inicio->dado;
-        self->tamanho = 0;
-        free(self->inicio);
-        self->inicio = NULL;
-        self->fim = NULL;
-        return dado;
+    void* dado = self->array[0];
+    for (int i = 0; i < self->tamanho-1; i++) {
+        self->array[i] = self->array[i+1];
     }
-    struct no *aux = self->inicio;
-    int dado = aux->dado;
-    self->inicio = aux->prox;
-    free(aux);
     self->tamanho--;
     return dado;
 }
 
 void fila_destroi(fila_t *self)
 {
-    while (!fila_vazia(self)) {
-        fila_dequeue(self);
-    }
+    free(self->array);
     free(self);
 }
 
@@ -73,13 +53,11 @@ int fila_tamanho(fila_t *self){
     return self->tamanho;
 }
 
-int fila_contem(fila_t* self, int dado){
-    struct no *aux = self->inicio;
-    while (aux != NULL) {
-        if (aux->dado == dado) {
+int fila_contem(fila_t* self, void* dado){
+    for(int i=0; i<self->tamanho; i++){
+        if(self->array[i] == dado){
             return 1;
         }
-        aux = aux->prox;
     }
     return 0;
 }
