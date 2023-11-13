@@ -82,7 +82,7 @@ typedef struct {
   int numPreempcoesProc[MAX_PROCESSOS];
   int numTransicaoEstadoProc[MAX_PROCESSOS][n_estado_processo];
   int tempoTotalEstadoProc[MAX_PROCESSOS][n_estado_processo];
-  int tempoMedioProntoProc[MAX_PROCESSOS];
+  float tempoMedioProntoProc[MAX_PROCESSOS];
 } so_stat_t;
 
 struct so_t {
@@ -188,6 +188,8 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
   irq_t irq = reg_A;
   err_t err;
   so_salva_estado_processo(self);
+
+  self->estatisticas->numInterrupcoes[irq]++;
   switch (irq) {
     case IRQ_RESET:
       err = so_trata_irq_reset(self);
@@ -237,6 +239,7 @@ static err_t so_trata_irq_reset(so_t *self)
   self->processos[0].esperando = NULL;
   self->processos[0].dispES = -1;
   self->processos[0].prioridade = 0.5;
+  self->estatisticas->procsCriados++;
 
   fila_enqueue(self->filaProcessos, (void*)&self->processos[0]);
   return ERR_OK;
@@ -264,6 +267,11 @@ static err_t so_trata_irq_relogio(so_t *self)
     if(self->processoAtual->existe){
       self->processoAtual->quantum--;
     }
+  }
+  rel_le(self->relogio, 0, &self->estatisticas->tempoTotalExecucaoCpu);
+  self->estatisticas->tempoTotalExecucaoProc[self->processoAtual->id]++;
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    self->estatisticas->tempoTotalEstadoProc[i][self->processos[i].estado]++;
   }
   return ERR_OK;
 }
@@ -321,6 +329,7 @@ static void so_chamada_le(so_t *self)
   }else{
     // n pode ler direto
     self->processoAtual->estado = bloqueado;
+    self->estatisticas->numTransicaoEstadoProc[self->processoAtual->id][bloqueado]++;
     self->processoAtual->dispES = operacao;
     // remover o processo da lista de prontos
     if(fila_contem(self->filaProcessos, (void*)&self->processoAtual)){
@@ -349,6 +358,7 @@ static void so_chamada_escr(so_t *self)
   }else{
     // n pode direto
     self->processoAtual->estado = bloqueado;
+    self->estatisticas->numTransicaoEstadoProc[self->processoAtual->id][bloqueado]++;
     self->processoAtual->dispES = operacao;
     self->processoAtual->dadoES = self->processoAtual->regX;
     // remover o processo da lista de prontos
@@ -397,6 +407,7 @@ static void so_chamada_cria_proc(so_t *self)
   self->processos[id].dispES = -1;
   self->processos[id].estado = pronto;
   self->processos[id].prioridade = 0.5;
+  self->estatisticas->procsCriados++;
 
   // em X está o endereço onde está o nome do arquivo
   int ender_proc = self->processoAtual->regX;
@@ -428,6 +439,7 @@ static void so_chamada_espera_proc(so_t* self){
   process_t *esperador = self->processoAtual;
 
   esperador->estado = bloqueado;
+  self->estatisticas->numTransicaoEstadoProc[esperador->id][bloqueado]++;
   esperador->esperando = esperado;
   console_printf(self->console, "SO: %d bloqueado(espera o %d)", esperador->id, esperado->id, esperador->estado);
   remover_processo_fila(self, (void*)esperador);
@@ -449,12 +461,13 @@ static void so_chamada_mata_proc(so_t *self)
 
   // self->processoAtual->existe = 0;
   self->processoAtual->estado = parado;
+  self->estatisticas->numTransicaoEstadoProc[self->processoAtual->id][parado]++;
   if(fila_contem(self->filaProcessos, (void*)&self->processoAtual)){
     remover_processo_fila(self, (void*)&self->processoAtual);
   }
 
   console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->id);
-  self->processoAtual = NULL;
+  self->processoAtual = &processo_vazio;
 }
 
 // pega os registradores salvos no IRQ e salva no tabela de processos para o atual
@@ -495,6 +508,7 @@ static bool so_escalonador(so_t* self){
   // ta vazio e nao tem mais nenhum, pula
   if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
     self->processoAtual = &processo_vazio;
+    self->estatisticas->tempoOcioso++;
 
     // verificar se realmente n tem mais nenhum pronto, dps mostrar estatisticas
     bool fim = true;
@@ -517,6 +531,7 @@ static bool so_escalonador(so_t* self){
     if(proxId == NULL || proxId->estado != pronto){
       console_printf(self->console, "SO: n tinha pronto, defini o vazio2");
       self->processoAtual = &processo_vazio;
+      self->estatisticas->tempoOcioso++;
       return false;
     }
     self->processoAtual = proxId;
@@ -536,6 +551,10 @@ static bool so_escalonador(so_t* self){
     self->processoAtual->prioridade = novaPrioridade;
 #endif
 
+    // faz a media do tempo q ele ficou pronto
+    self->estatisticas->tempoMedioProntoProc[self->processoAtual->id] += QUANTUM - self->processoAtual->quantum;
+    self->estatisticas->tempoMedioProntoProc[self->processoAtual->id] /= 2;
+
     self->processoAtual->quantum = QUANTUM;
     if(self->processoAtual->estado == pronto){
       fila_enqueue(self->filaProcessos, self->processoAtual);
@@ -545,7 +564,12 @@ static bool so_escalonador(so_t* self){
     if(proxId == NULL || proxId->estado != pronto){
       self->processoAtual = &processo_vazio;
       console_printf(self->console, "SO: n tinha pronto, defini o vazio1");
+      self->estatisticas->tempoOcioso++;
       return false;
+    }
+    if(self->processoAtual != &processo_vazio && self->processoAtual != proxId){
+      self->estatisticas->numPreempcoesCpu++;
+      self->estatisticas->numPreempcoesProc[self->processoAtual->id]++;
     }
     self->processoAtual = proxId;
     self->processoAtual->quantum = QUANTUM;
@@ -627,6 +651,7 @@ static void so_desbloqueia_es(so_t* self, int i){
     proc->dadoES);
   }
   proc->estado = pronto;
+  self->estatisticas->numTransicaoEstadoProc[proc->id][pronto]++;
   proc->dispES = -1;
   fila_enqueue(self->filaProcessos, proc);
 }
@@ -637,6 +662,7 @@ static void so_desbloqueia_espera(so_t* self, int i){
     console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->id, proc->esperando->id);
     proc->esperando = NULL;
     proc->estado = pronto;
+    self->estatisticas->numTransicaoEstadoProc[proc->id][pronto]++;
     if(!fila_contem(self->filaProcessos, (void*)proc)){
       fila_enqueue(self->filaProcessos, proc);
     }
@@ -710,13 +736,12 @@ static void so_gera_estatisticas(so_t *self){
   if(self->estatisticasGeradas){
     return;
   }
-  const char filename = "stats.log";
+  const char* filename = "stats.log";
   self->estatisticasGeradas = true;
   FILE* arq = fopen(filename, "w");
-  fprintf(arq, "-=-  FIM DE EXECUÇÃO DO CPU  -=-\n");
   fprintf(arq, "-=-       ESTATISTICAS       -=-\n");
-  fprintf(arq, "Processos criados:       %d\n", self->estatisticas->procsCriados);
-  fprintf(arq, "Tempo total de execução: %d\n", self->estatisticas->tempoTotalExecucaoCpu);
+  fprintf(arq, "Processos criados: %d\n", self->estatisticas->procsCriados);
+  fprintf(arq, "Tempo total de execução(ms da CPU): %d\n", self->estatisticas->tempoTotalExecucaoCpu);
   fprintf(arq, "Tempo ocioso: %d\n", self->estatisticas->tempoOcioso);
   for(int i=0; i<N_IRQ ;i++){
     fprintf(arq, "Nro de interrupcoes %s: %d\n", irq_nome(i), self->estatisticas->numInterrupcoes[i]);
@@ -739,7 +764,7 @@ static void so_gera_estatisticas(so_t *self){
     }
   }
   for(int i=0; i<MAX_PROCESSOS; i++){
-    fprintf(arq, "Tempo medio pronto(Processo %d): %d\n", i, self->estatisticas->tempoMedioProntoProc[i]);
+    fprintf(arq, "Tempo medio pronto(Processo %d): %.2f\n", i, self->estatisticas->tempoMedioProntoProc[i]);
   }
   fprintf(arq, "-=-     FIM ESTATISTICAS     -=-\n");
   fclose(arq);
