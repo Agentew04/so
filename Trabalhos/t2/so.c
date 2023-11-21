@@ -439,6 +439,9 @@ static void so_chamada_cria_proc(so_t *self)
   }
 
   int ender_carga = so_carrega_programa(self, nome, proc);
+  // so_carrega_programa vai seta a tabpag do novo processo
+  // retorna a mmu pra tabpag do processo atual
+  mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
   // o endereço de carga é endereço virtual, deve ser 0
   if (ender_carga < 0) {
     console_printf(self->console, "SO: endereco de carga eh menor que 0, erro no so_carrega_programa()");
@@ -518,6 +521,7 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   // carrega o programa na memória principal
   int end_fis_ini = quadro_ini * TAM_PAGINA;
   int end_fis = end_fis_ini;
+  mmu_define_tabpag(self->mmu, procAlvo->tabpag);
   for (int end_virt = end_virt_ini; end_virt <= end_virt_fim; end_virt++) {
     if (mem_escreve(self->mem, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
       console_printf(self->console,
