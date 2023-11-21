@@ -129,6 +129,11 @@ static void so_desbloqueia_es(so_t* self, process_t* proc);
 static void so_desbloqueia_espera(so_t* self, process_t* proc);
 static void remover_processo_fila(so_t* self, process_t* proc);
 
+static void so_chamada_le(so_t *self);
+static void so_chamada_escr(so_t *self);
+static void so_chamada_espera(so_t* self);
+static void so_chamada_cria_proc(so_t *self);
+static void so_chamada_mata_proc(so_t *self);
 // função a ser chamada pela CPU quando executa a instrução CHAMAC
 // essa instrução só deve ser executada quando for tratar uma interrupção
 // o primeiro argumento é um ponteiro para o SO, o segundo é a identificação
@@ -160,6 +165,7 @@ static void so_salva_estado_da_cpu(so_t *self)
 {
   if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
     // return;
+    self->processoAtual = &processo_vazio;
   }
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
@@ -306,11 +312,6 @@ static err_t so_trata_irq_desconhecida(so_t *self, int irq)
 
 // Chamadas de sistema
 
-static void so_chamada_le(so_t *self);
-static void so_chamada_escr(so_t *self);
-static void so_chamada_espera(so_t* self);
-static void so_chamada_cria_proc(so_t *self);
-static void so_chamada_mata_proc(so_t *self);
 
 static err_t so_trata_chamada_sistema(so_t *self)
 {
@@ -331,6 +332,9 @@ static err_t so_trata_chamada_sistema(so_t *self)
       break;
     case SO_MATA_PROC:
       so_chamada_mata_proc(self);
+      break;
+    case SO_ESPERA_PROC:
+      so_chamada_espera(self);
       break;
     default:
       console_printf(self->console,
