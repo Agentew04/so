@@ -566,11 +566,38 @@ static bool so_copia_str_do_processo(so_t *self, int tam, char str[tam],
 }
 
 static void so_desbloqueia_es(so_t* self, process_t* proc){
+  int dispositivoChecagem = proc->dispES+1;
+  int jahpode;
+  term_le(self->console, dispositivoChecagem, &jahpode);
+  if(!jahpode){
+    return;
+  }
 
+  int leitura = (dispositivoChecagem-1) % 4 == 0;
+  if(leitura){
+    int dado;
+    term_le(self->console, proc->dispES, &dado);
+    proc->regA = dado;
+  }else{
+    // escrita na tela
+    term_escr(self->console,
+    proc->dispES,
+    proc->dadoES);
+  }
+  proc->estado = pronto;
+  proc->dispES = -1;
+  fila_enqueue(self->filaProcessos, proc);
 }
 
 static void so_desbloqueia_espera(so_t* self, process_t* proc){
-
+  if(proc->esperando->estado == parado) {
+    console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->id, proc->esperando->id);
+    proc->esperando = NULL;
+    proc->estado = pronto;
+    if(!fila_contem(self->filaProcessos, (void*)proc)){
+      fila_enqueue(self->filaProcessos, proc);
+    }
+  }
 }
 
 static void remover_processo_fila(so_t* self, process_t* proc){
