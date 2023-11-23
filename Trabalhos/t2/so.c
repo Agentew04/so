@@ -129,6 +129,11 @@ static void so_desbloqueia_es(so_t* self, process_t* proc);
 static void so_desbloqueia_espera(so_t* self, process_t* proc);
 static void remover_processo_fila(so_t* self, process_t* proc);
 
+static void so_chamada_le(so_t *self);
+static void so_chamada_escr(so_t *self);
+static void so_chamada_espera(so_t* self);
+static void so_chamada_cria_proc(so_t *self);
+static void so_chamada_mata_proc(so_t *self);
 // função a ser chamada pela CPU quando executa a instrução CHAMAC
 // essa instrução só deve ser executada quando for tratar uma interrupção
 // o primeiro argumento é um ponteiro para o SO, o segundo é a identificação
@@ -160,6 +165,7 @@ static void so_salva_estado_da_cpu(so_t *self)
 {
   if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
     // return;
+    self->processoAtual = &processo_vazio;
   }
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
@@ -199,11 +205,64 @@ static void so_trata_pendencias(so_t *self)
   // - desbloqueio de processos
   // - contabilidades
 }
-static void so_escalona(so_t *self)
-{
-  // escolhe o próximo processo a executar, que passa a ser o processo
-  //   corrente; pode continuar sendo o mesmo de antes ou não
+
+static void so_escalona(so_t* self){
+  // ta vazio e nao tem mais nenhum, pula
+  if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
+    self->processoAtual = &processo_vazio;
+
+    // verificar se realmente n tem mais nenhum pronto, dps mostrar estatisticas
+    bool fim = true;
+    for(int i=0;i<MAX_PROCESSOS;i++){
+      if(self->processos[i].existe && self->processos[i].estado != parado){
+        fim = false;
+      }
+    }
+    if(fim){
+      so_gera_estatisticas(self);
+    }
+    return;
+  }
+
+  //console_printf(self->console, "SO: escalonando, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
+  // aqui ta vazio e tem disponivel
+  if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
+    // pega o proximo pra executar
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio2");
+      self->processoAtual = &processo_vazio;
+      return;
+    }
+    self->processoAtual = proxId;
+    self->processoAtual->quantum = QUANTUM;
+    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId->id);
+    return;
+  }
+
+  // processo bloqueou ou acabou quantum
+  if(self->processoAtual->estado == bloqueado || self->processoAtual->quantum <= 0){
+    // faz a media do tempo q ele ficou pronto
+
+    self->processoAtual->quantum = QUANTUM;
+    if(self->processoAtual->estado == pronto){
+      fila_enqueue(self->filaProcessos, self->processoAtual);
+    }
+
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
+      self->processoAtual = &processo_vazio;
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio1");
+      return;
+    }
+    self->processoAtual = proxId;
+    self->processoAtual->quantum = QUANTUM;
+    //console_printf(self->console, "SO: escalonei, ainda tem x procs na fila"/*, fila_tamanho(self->filaProcessos)*/);
+    return;
+  }
+  return;
 }
+
 static void so_despacha(so_t *self)
 {
   // talvez nao precise disso pois o processo vazio ja e err_cpu_parada
@@ -306,11 +365,6 @@ static err_t so_trata_irq_desconhecida(so_t *self, int irq)
 
 // Chamadas de sistema
 
-static void so_chamada_le(so_t *self);
-static void so_chamada_escr(so_t *self);
-static void so_chamada_espera(so_t* self);
-static void so_chamada_cria_proc(so_t *self);
-static void so_chamada_mata_proc(so_t *self);
 
 static err_t so_trata_chamada_sistema(so_t *self)
 {
@@ -331,6 +385,9 @@ static err_t so_trata_chamada_sistema(so_t *self)
       break;
     case SO_MATA_PROC:
       so_chamada_mata_proc(self);
+      break;
+    case SO_ESPERA_PROC:
+      so_chamada_espera(self);
       break;
     default:
       console_printf(self->console,
@@ -435,6 +492,9 @@ static void so_chamada_cria_proc(so_t *self)
   }
 
   int ender_carga = so_carrega_programa(self, nome, proc);
+  // so_carrega_programa vai seta a tabpag do novo processo
+  // retorna a mmu pra tabpag do processo atual
+  mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
   // o endereço de carga é endereço virtual, deve ser 0
   if (ender_carga < 0) {
     console_printf(self->console, "SO: endereco de carga eh menor que 0, erro no so_carrega_programa()");
@@ -514,6 +574,7 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   // carrega o programa na memória principal
   int end_fis_ini = quadro_ini * TAM_PAGINA;
   int end_fis = end_fis_ini;
+  mmu_define_tabpag(self->mmu, procAlvo->tabpag);
   for (int end_virt = end_virt_ini; end_virt <= end_virt_fim; end_virt++) {
     if (mem_escreve(self->mem, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
       console_printf(self->console,
