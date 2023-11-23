@@ -103,6 +103,7 @@ void so_destroi(so_t *self)
   for(int i=0; i<MAX_PROCESSOS; i++){
     if(self->processos[i].tabpag != NULL){
       tabpag_destroi(self->processos[i].tabpag);
+      self->processos[i].tabpag = NULL;
     }
   }
   free(self);
@@ -150,6 +151,9 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
   // salva o estado da cpu no descritor do processo que foi interrompido
   so_salva_estado_da_cpu(self);
   // faz o atendimento da interrupção
+  if(irq == IRQ_RESET){
+    console_printf(self->console, "SO: resetando");
+  }
   err = so_trata_irq(self, irq);
   // faz o processamento independente da interrupção
   so_trata_pendencias(self);
@@ -163,8 +167,9 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
 
 static void so_salva_estado_da_cpu(so_t *self)
 {
-  if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
+  if(self->processoAtual == NULL){
     // return;
+    console_printf(self->console, "SO: proc atual null, redirect p vazio em SALVA");
     self->processoAtual = &processo_vazio;
   }
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
@@ -207,16 +212,56 @@ static void so_trata_pendencias(so_t *self)
 }
 static void so_escalona(so_t *self)
 {
-  // escolhe o próximo processo a executar, que passa a ser o processo
-  //   corrente; pode continuar sendo o mesmo de antes ou não
+  // ta vazio e nao tem mais nenhum, pula
+  if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
+    self->processoAtual = &processo_vazio;
+    return;
+  }
+
+  //console_printf(self->console, "SO: escalonando, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
+  // aqui ta vazio e tem disponivel
+  if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
+    // pega o proximo pra executar
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio2");
+      self->processoAtual = &processo_vazio;
+      return;
+    }
+    self->processoAtual = proxId;
+    self->processoAtual->quantum = QUANTUM;
+    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId->id);
+    return;
+  }
+
+  // processo bloqueou ou acabou quantum
+  if(self->processoAtual->estado == bloqueado || self->processoAtual->quantum <= 0){
+    self->processoAtual->quantum = QUANTUM;
+    if(self->processoAtual->estado == pronto){
+      fila_enqueue(self->filaProcessos, self->processoAtual);
+    }
+
+    process_t* proxId = (process_t*)fila_dequeue(self->filaProcessos);
+    if(proxId == NULL || proxId->estado != pronto){
+      self->processoAtual = &processo_vazio;
+      console_printf(self->console, "SO: n tinha pronto, defini o vazio1");
+      return;
+    }
+    self->processoAtual = proxId;
+    self->processoAtual->quantum = QUANTUM;
+    //console_printf(self->console, "SO: escalonei, ainda tem x procs na fila"/*, fila_tamanho(self->filaProcessos)*/);
+    return;
+  }
 }
 static void so_despacha(so_t *self)
 {
-  // talvez nao precise disso pois o processo vazio ja e err_cpu_parada
-  if(self->processoAtual == NULL || self->processoAtual == &processo_vazio){
-    // mem_escreve(self->mem, IRQ_END_erro, ERR_CPU_PARADA);
-    // return;
+  if(self->processoAtual == NULL){
+    // o processo vazio deveria ter uma tabpag propria?
+    // ou deveria lidar manualmente aqui?
+    console_printf(self->console, "SO: processo nulo no despacha, redirect p vazio em DESPACHA");
     self->processoAtual = &processo_vazio;
+    //mem_escreve(self->mem, IRQ_END_erro, ERR_CPU_PARADA);
+    //return;
   }
   mem_escreve(self->mem, IRQ_END_PC, self->processoAtual->regPC);
   mem_escreve(self->mem, IRQ_END_A, self->processoAtual->regA);
@@ -259,6 +304,10 @@ static err_t so_trata_irq_reset(so_t *self)
   // reseta todos os processos
   for(int i=0; i<MAX_PROCESSOS; i++){
     self->processos[i].existe = 0;
+    if(self->processos[i].tabpag != NULL){
+      tabpag_destroi(self->processos[i].tabpag);
+      self->processos[i].tabpag = NULL;
+    }
   }
 
   // define os dados do novo processo
@@ -280,6 +329,8 @@ static err_t so_trata_irq_reset(so_t *self)
     return ERR_CPU_PARADA;
   }
   proc->regPC = ender;
+
+  fila_enqueue(self->filaProcessos, (void*)proc);
   return ERR_OK;
 }
 
@@ -463,6 +514,7 @@ static void so_chamada_mata_proc(so_t *self)
   self->processoAtual->existe = 0;
   self->processoAtual->estado = parado;
   tabpag_destroi(self->processoAtual->tabpag);
+  self->processoAtual->tabpag = NULL;
   if(fila_contem(self->filaProcessos, (void*)self->processoAtual)){
     remover_processo_fila(self, self->processoAtual);
   }
