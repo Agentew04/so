@@ -6,7 +6,7 @@
 process_t processo_vazio = {
   .id = -1,
   .existe = 1,
-  .estado = parado,
+  .estado = pronto,
   .dispES = -1,
   .dadoES = 0,
   .esperando = NULL,

@@ -175,7 +175,13 @@ static void so_salva_estado_da_cpu(so_t *self)
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
   mem_le(self->mem, IRQ_END_X, &self->processoAtual->regX);
-  mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
+  if(self->processoAtual == &processo_vazio){
+    //processo_vazio.regErr = ERR_OK;
+    self->processoAtual->regErr = ERR_CPU_PARADA;
+    //mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
+  }else{
+    mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
+  }
   mem_le(self->mem, IRQ_END_complemento, &self->processoAtual->regCompl);
   mem_le(self->mem, IRQ_END_modo, &self->processoAtual->regModo);
   // se não houver processo corrente, não faz nada
@@ -263,13 +269,13 @@ static void so_despacha(so_t *self)
     //mem_escreve(self->mem, IRQ_END_erro, ERR_CPU_PARADA);
     //return;
   }
+  mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
   mem_escreve(self->mem, IRQ_END_PC, self->processoAtual->regPC);
   mem_escreve(self->mem, IRQ_END_A, self->processoAtual->regA);
   mem_escreve(self->mem, IRQ_END_X, self->processoAtual->regX);
   mem_escreve(self->mem, IRQ_END_erro, (int)self->processoAtual->regErr);
   mem_escreve(self->mem, IRQ_END_complemento, self->processoAtual->regCompl);
   mem_escreve(self->mem, IRQ_END_modo, self->processoAtual->regModo);
-  mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
 }
 
 static err_t so_trata_irq(so_t *self, int irq)
@@ -341,7 +347,7 @@ static err_t so_trata_irq_err_cpu(so_t *self)
     // mata processo
     so_chamada_mata_proc(self);
   }
-  return ERR_CPU_PARADA;
+  return ERR_OK;
 }
 
 static err_t so_trata_irq_relogio(so_t *self)
