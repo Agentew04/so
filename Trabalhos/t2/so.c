@@ -66,6 +66,9 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   self->relogio = relogio;
   self->filaProcessos = fila_cria();
 
+  //inicia processo vazio
+  processo_vazio.tabpag = tabpag_cria();
+
   // quando a CPU executar uma instrução CHAMAC, deve chamar a função
   //   so_trata_interrupcao
   cpu_define_chamaC(self->cpu, so_trata_interrupcao, self);
@@ -357,6 +360,7 @@ static err_t so_trata_irq_relogio(so_t *self)
   if(self->processoAtual != NULL && self->processoAtual != &processo_vazio){
     self->processoAtual->quantum--;
   }
+  console_printf(self->console, "SO: relogio");
   return ERR_OK;
 }
 

@@ -1,1 +1,6 @@
 tags
+*.zip
+.vscode/
+*.o
+*.maq
+log_da_console

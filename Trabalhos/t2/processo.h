@@ -11,11 +11,7 @@ typedef enum process_estado_s {
   n_estado_processo
 } process_estado_t;
 
-char* estado_processo_nome[] = {
-  "pronto",
-  "bloqueado",
-  "parado"
-};
+extern char* estado_processo_nome[];
 
 typedef struct process_s {
   int id;
@@ -36,6 +32,6 @@ typedef struct process_s {
   tabpag_t *tabpag;
 } process_t;
 
-process_t processo_vazio;
+extern process_t processo_vazio;
 
 #endif

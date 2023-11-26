@@ -57,7 +57,7 @@ void controle_laco(controle_t *self)
   console_printf(self->console, "Fim da execução.");
   console_printf(self->console, "relógio: %d\n", rel_agora(self->relogio));
 }
- 
+
 
 static void controle_processa_teclado(controle_t *self)
 {
