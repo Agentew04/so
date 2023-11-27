@@ -30,6 +30,7 @@
 struct so_t {
   cpu_t *cpu;
   mem_t *mem;
+  mem_t *disco;
   mmu_t *mmu;
   console_t *console;
   relogio_t *relogio;
@@ -154,9 +155,6 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
   // salva o estado da cpu no descritor do processo que foi interrompido
   so_salva_estado_da_cpu(self);
   // faz o atendimento da interrupção
-  if(irq == IRQ_RESET){
-    console_printf(self->console, "SO: resetando");
-  }
   err = so_trata_irq(self, irq);
   // faz o processamento independente da interrupção
   so_trata_pendencias(self);
@@ -174,17 +172,12 @@ static void so_salva_estado_da_cpu(so_t *self)
     // return;
     console_printf(self->console, "SO: proc atual null, redirect p vazio em SALVA");
     self->processoAtual = &processo_vazio;
+    return;
   }
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
   mem_le(self->mem, IRQ_END_X, &self->processoAtual->regX);
-  if(self->processoAtual == &processo_vazio){
-    //processo_vazio.regErr = ERR_OK;
-    self->processoAtual->regErr = ERR_CPU_PARADA;
-    //mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
-  }else{
-    mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
-  }
+  mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
   mem_le(self->mem, IRQ_END_complemento, &self->processoAtual->regCompl);
   mem_le(self->mem, IRQ_END_modo, &self->processoAtual->regModo);
   // se não houver processo corrente, não faz nada
@@ -346,9 +339,16 @@ static err_t so_trata_irq_reset(so_t *self)
 static err_t so_trata_irq_err_cpu(so_t *self)
 {
   err_t err = self->processoAtual->regErr;
-  if(err != ERR_OK && self->processoAtual != &processo_vazio && self->processoAtual != NULL){
+  if(err != ERR_OK && self->processoAtual != &processo_vazio && self->processoAtual != NULL
+    && err != ERR_PAG_AUSENTE){
     // mata processo
     so_chamada_mata_proc(self);
+  }
+
+  if(err==ERR_PAG_AUSENTE){
+    // aqui temos q carregar a pagina que ele está pedindo!
+    // se tiver cheio a memória, temos q tirar uma pagina da memória
+    // e colocar a nova no lugar
   }
   return ERR_OK;
 }
@@ -585,6 +585,9 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   int end_fis = end_fis_ini;
   mmu_define_tabpag(self->mmu, procAlvo->tabpag);
   for (int end_virt = end_virt_ini; end_virt <= end_virt_fim; end_virt++) {
+    // aqui talvez temos que carregar todo o programa no disco
+    // e só pegar o que precisamos quando precisamos
+
     if (mem_escreve(self->mem, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
       console_printf(self->console,
           "Erro na carga da memória, end virt %d fís %d\n", end_virt, end_fis);
