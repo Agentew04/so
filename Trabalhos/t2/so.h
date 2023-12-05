@@ -14,7 +14,8 @@ typedef struct so_t so_t;
 #include "relogio.h"
 
 so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
-              console_t *console, relogio_t *relogio);
+              console_t *console, relogio_t *relogio,
+              mem_t *disco);
 void so_destroi(so_t *self);
 
 // Chamadas de sistema

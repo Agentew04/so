@@ -30,6 +30,7 @@ typedef struct process_s {
   int regModo;
 
   tabpag_t *tabpag;
+  int discoInicio;
 } process_t;
 
 extern process_t processo_vazio;

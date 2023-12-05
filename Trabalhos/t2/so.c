@@ -31,6 +31,7 @@ struct so_t {
   cpu_t *cpu;
   mem_t *mem;
   mem_t *disco;
+  int disco_livre;
   mmu_t *mmu;
   console_t *console;
   relogio_t *relogio;
@@ -48,6 +49,7 @@ struct so_t {
 static err_t so_trata_interrupcao(void *argC, int reg_A);
 
 // funções auxiliares
+static err_t so_carrega_pagina(so_t* self, int enderecoVirtual);
 static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* procAlvo);
 static bool so_copia_str_do_processo(so_t *self, int tam, char str[tam],
                                      int end_virt, process_t* processo);
@@ -55,7 +57,8 @@ static bool so_copia_str_do_processo(so_t *self, int tam, char str[tam],
 
 
 so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
-              console_t *console, relogio_t *relogio)
+              console_t *console, relogio_t *relogio,
+              mem_t *disco)
 {
   so_t *self = malloc(sizeof(*self));
   if (self == NULL) return NULL;
@@ -66,9 +69,12 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   self->console = console;
   self->relogio = relogio;
   self->filaProcessos = fila_cria();
+  self->disco = disco;
 
   //inicia processo vazio
-  processo_vazio.tabpag = tabpag_cria();
+  // comentando a linha de baixo para de dar erro de instrução inválida
+  // mas para de funcionar a instrução CHAMAS
+  //processo_vazio.tabpag = tabpag_cria();
 
   // quando a CPU executar uma instrução CHAMAC, deve chamar a função
   //   so_trata_interrupcao
@@ -93,9 +99,11 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   //self->tabpag = tabpag_cria();
 
   mmu_define_tabpag(self->mmu, NULL/*self->tabpag*/);
+
   // define o primeiro quadro livre de memória como o seguinte àquele que
   //   contém o endereço 99 (as 100 primeiras posições de memória (pelo menos)
   //   não vão ser usadas por programas de usuário)
+  self->disco_livre = 0;
   self->quadro_livre = 99 / TAM_PAGINA + 1;
   return self;
 }
@@ -162,7 +170,6 @@ static err_t so_trata_interrupcao(void *argC, int reg_A)
   so_escalona(self);
   // recupera o estado do processo escolhido
   so_despacha(self);
-  console_printf(self->console, "Erro do TrataIRQ eh: %d %s", (int)err, err_nome(err));
   return err;
 }
 
@@ -174,6 +181,8 @@ static void so_salva_estado_da_cpu(so_t *self)
     self->processoAtual = &processo_vazio;
     return;
   }
+  console_printf(self->console, "SO: salvaestado pc%d id%d", self->processoAtual->regPC, self->processoAtual->id);
+  mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
   mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
   mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
   mem_le(self->mem, IRQ_END_X, &self->processoAtual->regX);
@@ -217,6 +226,7 @@ static void so_escalona(so_t *self)
   // ta vazio e nao tem mais nenhum, pula
   if(fila_tamanho(self->filaProcessos) <= 0 && (self->processoAtual == NULL || self->processoAtual == &processo_vazio)){
     self->processoAtual = &processo_vazio;
+    console_printf(self->console, "SO: n tem nenhum pronto :(");
     return;
   }
 
@@ -251,20 +261,19 @@ static void so_escalona(so_t *self)
     }
     self->processoAtual = proxId;
     self->processoAtual->quantum = QUANTUM;
-    //console_printf(self->console, "SO: escalonei, ainda tem x procs na fila"/*, fila_tamanho(self->filaProcessos)*/);
+    console_printf(self->console, "SO: escalonei, ainda tem %d procs na fila", fila_tamanho(self->filaProcessos));
     return;
   }
+  console_printf(self->console, "SO: escalona continua msm proc %d PC %d", self->processoAtual->id, self->processoAtual->regPC);
 }
 static void so_despacha(so_t *self)
 {
-  if(self->processoAtual == NULL){
-    // o processo vazio deveria ter uma tabpag propria?
-    // ou deveria lidar manualmente aqui?
-    console_printf(self->console, "SO: processo nulo no despacha, redirect p vazio em DESPACHA");
-    self->processoAtual = &processo_vazio;
-    //mem_escreve(self->mem, IRQ_END_erro, ERR_CPU_PARADA);
-    //return;
+  if(self->processoAtual == NULL|| self->processoAtual == &processo_vazio){
+    console_printf(self->console, "SO: Vazio em despacha, CPU PARADA");
+    mem_escreve(self->mem, IRQ_END_erro, ERR_CPU_PARADA);
+    return;
   }
+  console_printf(self->console, "SO: procAtual pc%d id%d", self->processoAtual->regPC, self->processoAtual->id);
   mmu_define_tabpag(self->mmu, self->processoAtual->tabpag);
   mem_escreve(self->mem, IRQ_END_PC, self->processoAtual->regPC);
   mem_escreve(self->mem, IRQ_END_A, self->processoAtual->regA);
@@ -331,25 +340,60 @@ static err_t so_trata_irq_reset(so_t *self)
     return ERR_CPU_PARADA;
   }
   proc->regPC = ender;
+  console_printf(self->console, "SO: criei programa com PC %d", proc->regPC);
+  mmu_define_tabpag(self->mmu, proc->tabpag);
 
   fila_enqueue(self->filaProcessos, (void*)proc);
+  return ERR_OK;
+}
+
+static err_t so_carrega_pagina(so_t* self, int enderecoVirtual){
+  int pagina = enderecoVirtual / TAM_PAGINA;
+  // o inicio da pagina no disco e na memoria principal
+  int start_end_fis_disco = self->processoAtual->discoInicio + enderecoVirtual;
+  int start_end_fisico_mem = self->quadro_livre*TAM_PAGINA;
+
+  // criamos a associacao de pagina e quadro
+  tabpag_define_quadro(self->processoAtual->tabpag, pagina, self->quadro_livre);
+
+  // vamos carregar todos os dados dessa pagina no proximo quadro vazio
+  for(int i=0; i<TAM_PAGINA; i++){
+    int conteudo;
+    if(!mem_le(self->disco, start_end_fis_disco + i, &conteudo)){
+      console_printf(self->console, "SO: n consegui ler pagina %d do disco(endPagina %d, desloc=%d)", pagina, start_end_fis_disco, i);
+      return ERR_CPU_PARADA;
+    }
+    if(!mem_escreve(self->mem, start_end_fisico_mem + i, conteudo)){
+      console_printf(self->console, "SO: n consegui escrever dado do disco na ram. Endereco %d", self->quadro_livre*TAM_PAGINA+i);
+      return ERR_CPU_PARADA;
+    }
+  }
+  self->quadro_livre++;
   return ERR_OK;
 }
 
 static err_t so_trata_irq_err_cpu(so_t *self)
 {
   err_t err = self->processoAtual->regErr;
-  if(err != ERR_OK && self->processoAtual != &processo_vazio && self->processoAtual != NULL
-    && err != ERR_PAG_AUSENTE){
-    // mata processo
+  console_printf(self->console, "SO: irq_err_cpu %s", err_nome(err));
+
+  // e um erro q nao sabemos tratar, mata o processo atual que causou
+  if(err != ERR_OK && err != ERR_PAG_AUSENTE
+    && self->processoAtual != &processo_vazio && self->processoAtual != NULL){
+    console_printf(self->console, "SO: erro desconhecido da cpu, matando");
     so_chamada_mata_proc(self);
+    return;
   }
 
-  if(err==ERR_PAG_AUSENTE){
+  if(err == ERR_PAG_AUSENTE){
+    console_printf(self->console, "SO: erro, pagina ausente!");
     // aqui temos q carregar a pagina que ele está pedindo!
     // se tiver cheio a memória, temos q tirar uma pagina da memória
     // e colocar a nova no lugar
+    int enderecoVirtual = self->processoAtual->regCompl;
+    return so_carrega_pagina(self, enderecoVirtual);
   }
+  console_printf(self->console, "SO: errocpu: %s", err_nome(err));
   return ERR_OK;
 }
 
@@ -571,30 +615,27 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   int end_virt_fim = end_virt_ini + prog_tamanho(prog) - 1;
   int pagina_ini = end_virt_ini / TAM_PAGINA;
   int pagina_fim = end_virt_fim / TAM_PAGINA;
-  int quadro_ini = self->quadro_livre;
-  // mapeia as páginas nos quadros
-  int quadro = quadro_ini;
-  for (int pagina = pagina_ini; pagina <= pagina_fim; pagina++) {
-    tabpag_define_quadro(procAlvo->tabpag, pagina, quadro);
-    quadro++;
-  }
-  self->quadro_livre = quadro;
+  int quadro_ini = self->disco_livre;
+  procAlvo->discoInicio = self->disco_livre;
 
-  // carrega o programa na memória principal
+  // registra todas as paginas como invalidas
+  for (int pagina = pagina_ini; pagina <= pagina_fim; pagina++) {
+    tabpag_define_quadro(procAlvo->tabpag, pagina, -1);
+    self->disco_livre++;
+  }
+
+  // carrega o programa na memória secundaria
   int end_fis_ini = quadro_ini * TAM_PAGINA;
   int end_fis = end_fis_ini;
   mmu_define_tabpag(self->mmu, procAlvo->tabpag);
   for (int end_virt = end_virt_ini; end_virt <= end_virt_fim; end_virt++) {
-    // aqui talvez temos que carregar todo o programa no disco
-    // e só pegar o que precisamos quando precisamos
-
     if (mem_escreve(self->mem, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
-      console_printf(self->console,
-          "Erro na carga da memória, end virt %d fís %d\n", end_virt, end_fis);
+      console_printf(self->console, "Erro na carga da memória, end virt %d fís %d\n", end_virt, end_fis);
       return -1;
     }
     end_fis++;
   }
+  console_printf(self->console, "SO: carreguei em disco o programa '%s'\n", nome_do_executavel);
   prog_destroi(prog);
   console_printf(self->console,
       "SO: carga de '%s' em V%d-%d F%d-%d", nome_do_executavel,

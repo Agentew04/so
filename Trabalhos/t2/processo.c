@@ -23,5 +23,6 @@ process_t processo_vazio = {
   .regCompl = 0,
   .regModo = usuario,
   .regErr = ERR_CPU_PARADA,
-  .tabpag = NULL
+  .tabpag = NULL,
+  .discoInicio = 0
 };
