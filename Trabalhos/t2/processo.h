@@ -14,7 +14,7 @@ typedef enum process_estado_s {
 extern char* estado_processo_nome[];
 
 typedef struct process_s {
-  int id;
+  int pid;
   int existe;
   process_estado_t estado;
   int dispES;

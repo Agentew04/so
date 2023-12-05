@@ -39,6 +39,7 @@ struct so_t {
   int quadro_livre;
 
   process_t processos[MAX_PROCESSOS];
+  int pidDisponivel;
   process_t* processoAtual;
   fila_t* filaProcessos;
 };
@@ -60,6 +61,7 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   so_t *self = malloc(sizeof(*self));
   if (self == NULL) return NULL;
 
+  self->pidDisponivel = 0;
   self->cpu = cpu;
   self->mem = mem;
   self->mmu = mmu;
@@ -133,6 +135,7 @@ static void so_despacha(so_t *self);
 static void so_desbloqueia_es(so_t* self, process_t* proc);
 static void so_desbloqueia_espera(so_t* self, process_t* proc);
 static void remover_processo_fila(so_t* self, process_t* proc);
+static process_t* so_pega_processo_pid(so_t* self, int pid);
 
 static void so_chamada_le(so_t *self);
 static void so_chamada_escr(so_t *self);
@@ -232,7 +235,7 @@ static void so_escalona(so_t *self)
     }
     self->processoAtual = proxId;
     self->processoAtual->quantum = QUANTUM;
-    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId->id);
+    console_printf(self->console, "SO: nao tinha nenhum processo, executando %d agr", proxId->pid);
     return;
   }
 
@@ -298,11 +301,6 @@ static err_t so_trata_irq(so_t *self, int irq)
 
 static err_t so_trata_irq_reset(so_t *self)
 {
-  // coloca o programa "init" na memória
-  // vai programar a tabela de páginas para traduzir os endereços virtuais
-  //   a partir de 0 para o endereço onde ele foi carregado.
-  process_t* proc = &self->processos[0];
-
   // reseta todos os processos
   for(int i=0; i<MAX_PROCESSOS; i++){
     self->processos[i].existe = 0;
@@ -311,6 +309,13 @@ static err_t so_trata_irq_reset(so_t *self)
       self->processos[i].tabpag = NULL;
     }
   }
+
+  self->pidDisponivel = 0; // vai resetar todos os processos
+  // coloca o programa "init" na memória
+  // vai programar a tabela de páginas para traduzir os endereços virtuais
+  //   a partir de 0 para o endereço onde ele foi carregado.
+  process_t* proc = &self->processos[0];
+
 
   // define os dados do novo processo
   proc->existe = 1;
@@ -322,7 +327,8 @@ static err_t so_trata_irq_reset(so_t *self)
   proc->regErr = ERR_OK;
   proc->regCompl = 0;
   proc->regModo = usuario;
-  proc->id = 0;
+  proc->pid = self->pidDisponivel;
+  self->pidDisponivel++;
   proc->quantum = QUANTUM;
   proc->tabpag = tabpag_cria();
   int ender = so_carrega_programa(self, "init.maq", proc);
@@ -407,7 +413,7 @@ static err_t so_trata_chamada_sistema(so_t *self)
 
 static void so_chamada_le(so_t *self)
 {
-  int terminal = self->processoAtual->id * 4;
+  int terminal = self->processoAtual->pid * 4;
   int operacao = terminal + 0;
 
   int pode;
@@ -423,7 +429,7 @@ static void so_chamada_le(so_t *self)
     // remover o processo da lista de prontos
     if(fila_contem(self->filaProcessos, (void*)self->processoAtual)){
       remover_processo_fila(self, self->processoAtual);
-      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
+      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->pid);
     }
   }
 }
@@ -435,7 +441,7 @@ static void so_chamada_escr(so_t *self)
     return;
   }
 
-  int terminal = self->processoAtual->id * 4;
+  int terminal = self->processoAtual->pid * 4;
   int operacao = terminal + 2;
 
   int pode;
@@ -453,7 +459,7 @@ static void so_chamada_escr(so_t *self)
     // remover o processo da lista de prontos
     if(fila_contem(self->filaProcessos, (void*)self->processoAtual)){
       remover_processo_fila(self, self->processoAtual);
-      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->id);
+      console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos", self->processoAtual->pid);
     }
   }
 }
@@ -462,24 +468,25 @@ static void so_chamada_cria_proc(so_t *self)
 {
 
   // acha a primeira entrada na tabela de processos vazia
-  int id = -1;
+  int slot = -1;
   for(int i = 0; i < MAX_PROCESSOS; i++){
     if(!self->processos[i].existe){
-      id = i;
+      slot = i;
       break;
     }
   }
-  console_printf(self->console, "criando processo com id %d...", id);
+  console_printf(self->console, "criando processo com id %d...", slot);
 
-  if(id == -1){
+  if(slot == -1){
     console_printf(self->console, "SO: SO_CRIA_PROC sem espaco na tabela de processos");
     self->processoAtual->regA = -1;
     return;
   }
 
-  process_t* proc = &self->processos[id];
+  process_t* proc = &self->processos[slot];
 
-  proc->id = id;
+  proc->pid = self->pidDisponivel;
+  self->pidDisponivel++;
   proc->existe = 1;
   proc->regA = 0;
   proc->regX = 0;
@@ -495,7 +502,7 @@ static void so_chamada_cria_proc(so_t *self)
 
   char nome[100];
   if (!so_copia_str_do_processo(self, 100, nome, ender_proc, proc)) {
-    console_printf(self->console, "SO: nao consegui copiar str da memoria, endProc: %d; proc %d!", ender_proc, proc->id);
+    console_printf(self->console, "SO: nao consegui copiar str da memoria, endProc: %d; proc %d!", ender_proc, proc->pid);
     return;
   }
 
@@ -510,7 +517,7 @@ static void so_chamada_cria_proc(so_t *self)
   }
   // deveria escrever no PC do descritor do processo criado
   proc->regPC = ender_carga;
-  self->processoAtual->regA = id; // devolve o pid pro processo que criou
+  self->processoAtual->regA = slot; // devolve o pid pro processo que criou
   fila_enqueue(self->filaProcessos, proc);
 }
 
@@ -529,20 +536,20 @@ static void so_chamada_mata_proc(so_t *self)
     remover_processo_fila(self, self->processoAtual);
   }
 
-  console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->id);
+  console_printf(self->console, "SO: eu parei o processo %d e tirei ele da fila", self->processoAtual->pid);
   self->processoAtual = &processo_vazio;
 }
 
 static void so_chamada_espera(so_t* self){
-  int id = self->processoAtual->regX;
-  process_t *esperado = &self->processos[id];
+  int pid = self->processoAtual->regX;
+  process_t *esperado = so_pega_processo_pid(self, pid);
   process_t *esperador = self->processoAtual;
 
   esperador->estado = bloqueado;
   esperador->esperando = esperado;
-  console_printf(self->console, "SO: %d bloqueado(espera o %d)", esperador->id, esperado->id, esperador->estado);
+  console_printf(self->console, "SO: %d bloqueado(espera o %d)", esperador->pid, esperado->pid, esperador->estado);
   remover_processo_fila(self, esperador);
-  console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos; filaTam: %d", self->processoAtual->id, fila_tamanho(self->filaProcessos));
+  console_printf(self->console, "SO: tirei o proc %d da fila de procs prontos; filaTam: %d", self->processoAtual->pid, fila_tamanho(self->filaProcessos));
 }
 
 
@@ -664,7 +671,7 @@ static void so_desbloqueia_es(so_t* self, process_t* proc){
 
 static void so_desbloqueia_espera(so_t* self, process_t* proc){
   if(proc->esperando->estado == parado) {
-    console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->id, proc->esperando->id);
+    console_printf(self->console, "SO: %d esperava %d e foi desbloqueado", proc->pid, proc->esperando->pid);
     proc->esperando = NULL;
     proc->estado = pronto;
     if(!fila_contem(self->filaProcessos, (void*)proc)){
@@ -680,4 +687,13 @@ static void remover_processo_fila(so_t* self, process_t* proc){
       fila_enqueue(self->filaProcessos, elem);
     }
   }
+}
+
+static process_t* so_pega_processo_pid(so_t* self, int pid){
+  for(int i=0; i<MAX_PROCESSOS; i++){
+    if(self->processos[i].pid == pid){
+      return &self->processos[i];
+    }
+  }
+  return NULL;
 }
