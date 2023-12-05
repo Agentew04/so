@@ -70,11 +70,13 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   self->relogio = relogio;
   self->filaProcessos = fila_cria();
   self->disco = disco;
+  self->disco_livre = 0;
+  self->quadro_livre = 99 / TAM_PAGINA + 1;
 
   //inicia processo vazio
   // comentando a linha de baixo para de dar erro de instrução inválida
   // mas para de funcionar a instrução CHAMAS
-  //processo_vazio.tabpag = tabpag_cria();
+  processo_vazio.tabpag = tabpag_cria();
 
   // quando a CPU executar uma instrução CHAMAC, deve chamar a função
   //   so_trata_interrupcao
@@ -103,8 +105,6 @@ so_t *so_cria(cpu_t *cpu, mem_t *mem, mmu_t *mmu,
   // define o primeiro quadro livre de memória como o seguinte àquele que
   //   contém o endereço 99 (as 100 primeiras posições de memória (pelo menos)
   //   não vão ser usadas por programas de usuário)
-  self->disco_livre = 0;
-  self->quadro_livre = 99 / TAM_PAGINA + 1;
   return self;
 }
 
@@ -179,6 +179,12 @@ static void so_salva_estado_da_cpu(so_t *self)
     // return;
     console_printf(self->console, "SO: proc atual null, redirect p vazio em SALVA");
     self->processoAtual = &processo_vazio;
+    mem_le(self->mem, IRQ_END_PC, &self->processoAtual->regPC);
+    mem_le(self->mem, IRQ_END_A, &self->processoAtual->regA);
+    mem_le(self->mem, IRQ_END_X, &self->processoAtual->regX);
+    mem_le(self->mem, IRQ_END_erro, (int*)(&self->processoAtual->regErr));
+    mem_le(self->mem, IRQ_END_complemento, &self->processoAtual->regCompl);
+    //mem_le(self->mem, IRQ_END_modo, &self->processoAtual->regModo);
     return;
   }
   console_printf(self->console, "SO: salvaestado pc%d id%d", self->processoAtual->regPC, self->processoAtual->id);
@@ -281,6 +287,7 @@ static void so_despacha(so_t *self)
   mem_escreve(self->mem, IRQ_END_erro, (int)self->processoAtual->regErr);
   mem_escreve(self->mem, IRQ_END_complemento, self->processoAtual->regCompl);
   mem_escreve(self->mem, IRQ_END_modo, self->processoAtual->regModo);
+  //mem_escreve(self->mem, IRQ_END_modo, usuario);
 }
 
 static err_t so_trata_irq(so_t *self, int irq)
@@ -324,7 +331,7 @@ static err_t so_trata_irq_reset(so_t *self)
   // define os dados do novo processo
   proc->existe = 1;
   proc->dadoES = 0;
-  proc->dispES = -1;
+ proc->dispES = -1;
   proc->esperando = NULL;
   proc->regA = 0;
   proc->regX = 0;
@@ -382,7 +389,7 @@ static err_t so_trata_irq_err_cpu(so_t *self)
     && self->processoAtual != &processo_vazio && self->processoAtual != NULL){
     console_printf(self->console, "SO: erro desconhecido da cpu, matando");
     so_chamada_mata_proc(self);
-    return;
+    return ERR_OK;
   }
 
   if(err == ERR_PAG_AUSENTE){
@@ -629,7 +636,7 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   int end_fis = end_fis_ini;
   mmu_define_tabpag(self->mmu, procAlvo->tabpag);
   for (int end_virt = end_virt_ini; end_virt <= end_virt_fim; end_virt++) {
-    if (mem_escreve(self->mem, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
+    if (mem_escreve(self->disco, end_fis, prog_dado(prog, end_virt)) != ERR_OK) {
       console_printf(self->console, "Erro na carga da memória, end virt %d fís %d\n", end_virt, end_fis);
       return -1;
     }
@@ -638,7 +645,7 @@ static int so_carrega_programa(so_t *self, char *nome_do_executavel, process_t* 
   console_printf(self->console, "SO: carreguei em disco o programa '%s'\n", nome_do_executavel);
   prog_destroi(prog);
   console_printf(self->console,
-      "SO: carga de '%s' em V%d-%d F%d-%d", nome_do_executavel,
+      "SO: carga de '%s' em V%d-%d F(d)%d-%d", nome_do_executavel,
                  end_virt_ini, end_virt_fim, end_fis_ini, end_fis - 1);
   return end_virt_ini;
 }

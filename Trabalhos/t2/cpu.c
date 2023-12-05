@@ -53,12 +53,12 @@ void cpu_destroi(cpu_t *self)
 
 char *cpu_descricao(cpu_t *self)
 {
-  static char descr[100]; 
+  static char descr[100];
   // imprime registradores, opcode, instrução
   int opcode = -1;
   mmu_le(self->mmu, self->PC, &opcode, self->modo);
   sprintf(descr, "%sPC=%04d A=%06d X=%06d %02d %s",
-                 self->modo == supervisor ? "🦸" : "🏃",
+                 self->modo == supervisor ? "adm" : "usr",
                  self->PC, self->A, self->X, opcode, instrucao_nome(opcode));
   // imprime argumento da instrução, se houver
   if (instrucao_num_args(opcode) > 0) {
@@ -452,15 +452,12 @@ bool cpu_interrompe(cpu_t *self, irq_t irq)
 
 static void cpu_desinterrompe(cpu_t *self)
 {
-  int dado;
   pega_mem(self, IRQ_END_PC,          &self->PC);
   pega_mem(self, IRQ_END_A,           &self->A);
   pega_mem(self, IRQ_END_X,           &self->X);
-  pega_mem(self, IRQ_END_erro,        &dado);
-  self->erro = dado;
+  pega_mem(self, IRQ_END_erro,        (int*)&self->erro);
   pega_mem(self, IRQ_END_complemento, &self->complemento);
-  pega_mem(self, IRQ_END_modo,        &dado);
-  self->modo = dado;
+  pega_mem(self, IRQ_END_modo,        (int*)&self->modo);
 }
 
 void cpu_define_chamaC(cpu_t *self, func_chamaC_t funcaoC, void *argC)
