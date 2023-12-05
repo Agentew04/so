@@ -2,5 +2,8 @@ tags
 *.zip
 .vscode/
 *.o
+*.d
 *.maq
+main
+montador
 log_da_console
