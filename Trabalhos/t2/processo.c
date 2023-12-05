@@ -10,7 +10,7 @@ char* estado_processo_nome[] = {
 };
 
 process_t processo_vazio = {
-  .id = -1,
+  .pid = -1,
   .existe = 1,
   .estado = pronto,
   .dispES = -1,
